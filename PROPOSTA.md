@@ -1,12 +1,13 @@
 # Proposta — laboratório Apache Iceberg
 
-Status: **proposta revisada com as decisões de 2026-10-12, aguardando ok para o spike**. Nada implementado ainda.
+Status: **aprovada em 2026-10-12, em implementação**. Spike local e AWS concluídos (seção 5); dados trocados para o Olist.
 
 | Decisão | Escolha |
 |---|---|
 | Disciplina | Engenharia de Dados, bloco de Open Table Formats (OTF) |
-| Domínio | infobarShop (pedidos de e-commerce) |
+| Domínio | Olist (Brazilian E-Commerce Public Dataset, dados reais, CC BY-NC-SA 4.0), via `infobarbosa/dataset-olist` |
 | Interface | blocos copiáveis para o terminal (heredoc + `lab.py` de apoio) |
+| Carga horária | 6 a 8 horas. Delta Lake e Hudi ficam em labs próprios, sem comparativo |
 | AWS | sim, como parte final |
 | Nome | `iceberg-tableformat-demo` (tutorial) e `iceberg-lab-docker-image` (imagem) |
 
@@ -33,16 +34,34 @@ Imagem `infobarbosa/iceberg-lab-docker-image`, no mesmo padrão das outras (Ubun
 - **Catálogo SQL em SQLite** (`SqlCatalog`): é um arquivo, não um servidor. O aluno abre com `sqlite3` e vê que o catálogo guarda só um ponteiro.
 - **Warehouse no file system local** (`/home/barbosa/warehouse`), para o aluno poder rodar `tree`, `ls -l` e `jq` direto nos arquivos.
 - **DuckDB CLI** com as extensões `iceberg`, `avro`, `parquet` e `httpfs` pré-instaladas: é a lente SQL (`iceberg_scan`, `iceberg_snapshots`, `iceberg_metadata`, `read_json`, `read_avro`, `parquet_metadata`).
-- **`lab.py`**: módulo de apoio com `catalogo()`, `tabela()` e `carrega_mes('2024-01')`, que baixa o CSV do mês de `datasets-csv-pedidos` via curl e devolve uma tabela Arrow. Assim cada bloco do README tem poucas linhas e mostra só o que importa.
+- **`lab.py`**: módulo de apoio com `catalogo()`, `tabela()`, `pedidos_novos('2017-01')`, `mudancas('2017-02')`, `produtos()` e `mostra()`. Ele baixa os CSVs do `dataset-olist` uma vez (cache em `~/dados`) e devolve tabelas Arrow. Assim cada bloco do README tem poucas linhas e mostra só o que importa. A derivação mensal (seção 3 abaixo) fica em SQL legível dentro do `lab.py`, para o aluno poder abrir e entender.
 - `jq`, `sqlite3`, `tree`, `aws` CLI.
 
 Não há banco para subir: o entrypoint só sobe o code-server.
 
-## 3. Dados: infobarShop
+## 3. Dados: Olist
 
-A tabela principal é `infobarshop.pedidos`, com as colunas `id_pedido`, `produto`, `valor_unitario`, `quantidade`, `data_criacao`, `uf` e `id_cliente`. Ela vem de `datasets-csv-pedidos` (um CSV por mês, de jan/2024 a jun/2025, cerca de 2 mil pedidos por mês). Apoio: `datasets-csv-clientes` e `dataset-json-pagamentos`.
+[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce): cerca de 100 mil pedidos reais (anonimizados) de marketplaces brasileiros, de 2016 a 2018, em 9 tabelas. A cópia em `infobarbosa/dataset-olist` (público, com atribuição e licença) existe para o lab baixar por curl, sem login no Kaggle. A licença é não comercial (uso em aula).
 
-**Um mês carregado = um commit.** A carga incremental mensal faz os snapshots aparecerem naturalmente, sem truque. A narrativa acompanha o dia a dia do time de dados do infobarShop: carga mensal, fechamento contábil, mudança no sistema de origem, Black Friday, pedido de exclusão (LGPD) e migração para a nuvem.
+Tabelas do lab, com os nomes de colunas originais em inglês:
+- **`olist.orders`** (principal): `order_id`, `customer_id`, `order_status`, `order_purchase_timestamp`, `order_approved_at`, `order_delivered_carrier_date`, `order_delivered_customer_date`, `order_estimated_delivery_date`.
+- **`olist.products`** (apoio, seção 7): 32.951 produtos, com o erro de digitação original `product_name_lenght`.
+- Ficam para o Desafio: `order_items`, `order_payments`, `order_reviews` e `customers`.
+
+**A carga mensal reconstrói o ciclo de vida do pedido.** As datas de compra, aprovação, transportadora e entrega permitem montar o estado de cada pedido no fim de cada mês. A carga de um mês traz os pedidos novos e os pedidos antigos que mudaram de status. Números reais, de jan/2017 a ago/2018 (20 meses):
+
+| | novos por mês | atualizados por mês |
+|---|---|---|
+| 2017 (jan–out) | 800 a 4.631 | 0 a 1.575 |
+| nov/2017 | **7.544** (Black Friday em 24/11: **1.176 pedidos num dia**, cerca de 3 vezes o normal) | 1.560 |
+| dez/2017 | 5.673 | **4.019** (as entregas da Black Friday) |
+| 2018 (jan–ago) | 6.167 a 7.269 | 1.687 a 3.698 |
+
+Uma simplificação, a explicar no README: `canceled` e `unavailable` não têm data, então o status final entra no mês do último evento conhecido do pedido.
+
+**Progressão:** nas Partes I e II, a carga mensal só faz append dos **pedidos novos**. Na Parte III vem a revelação: o pedido de janeiro foi entregue em fevereiro, e a tabela continua dizendo `approved`. A partir daí, a carga mensal vira um **upsert** das mudanças.
+
+**LGPD:** o cliente real é o `customer_unique_id` (tabela `customers`); 2.997 clientes têm mais de um pedido, cada um com um `customer_id` diferente. Apagar um cliente vira um `delete` com `In(customer_id, [...])`.
 
 ## 4. Roteiro: um conceito por vez
 
@@ -52,94 +71,105 @@ Cada seção segue o mesmo formato: **conceito → prática → "O que você dev
 
 **1. Ambiente.** CloudShell + `launch-lab.sh`, code-server, "Retomando o laboratório".
 
-**2. O problema: um data lake de Parquet "cru".** O DuckDB converte três meses de pedidos para Parquet numa pasta `lake/pedidos/` e consulta com glob.
+**2. O problema: um data lake de Parquet "cru".** O DuckDB grava os pedidos de jan a mar/2017 em `lake/orders/` (um Parquet por mês) e duas exportações de produtos em `lake/products/`, e consulta com glob.
 Prática:
-- (a) o sistema de origem passa a mandar `estado` no lugar de `uf`, e o faturamento por UF passa a vir com NULL;
-- (b) cancelar um único pedido obriga a reescrever o arquivo do mês;
-- (c) um relatório roda enquanto a carga de abril ainda está gravando e soma um mês pela metade;
-- (d) "qual era o faturamento de janeiro no fechamento de 01/02?" não tem resposta.
+- (a) o time de cadastro corrige `product_name_lenght` para `product_name_length` na exportação nova, e o glob quebra (ou, com `union_by_name`, metade dos produtos vem com NULL);
+- (b) um pedido de janeiro foi entregue: atualizar uma linha obriga a reescrever o Parquet do mês inteiro;
+- (c) um relatório roda enquanto a carga de abril ainda está gravando e conta um mês pela metade;
+- (d) "quantos pedidos tínhamos no fechamento de fevereiro?" não tem resposta.
 
 *Conceito:* sem um formato de tabela, a "tabela" é só uma convenção sobre uma pasta. Cada um desses quatro problemas volta a ser resolvido numa seção adiante.
 
-**3. Iceberg é uma especificação: catálogo, metadados, dados.** `create_namespace('infobarshop')` + `create_table('pedidos')`, ainda vazia.
+**3. Iceberg é uma especificação: catálogo, metadados, dados.** `create_namespace('olist')` + `create_table('orders')`, ainda vazia.
 Prática: `tree` do warehouse (só `00000-….metadata.json`), `jq` nesse arquivo (schema com field IDs, `format-version`, `current-snapshot-id: null`) e `sqlite3` no catálogo (uma linha com `metadata_location`).
 *Conceito:* as três camadas; o catálogo guarda só o ponteiro para o metadata.json atual.
 
-**4. O primeiro commit: a árvore de metadados.** Carregar jan/2024.
-Prática: descer a árvore um nível por vez. metadata.json → snapshot (`summary`: `added-records`) → **manifest list** (`snap-….avro`) → **manifest** (caminho do Parquet, `record_count`, min/max de `data_criacao` e `valor_unitario`) → **data file** (`parquet_metadata`).
+**4. O primeiro commit: a árvore de metadados.** Carregar os pedidos novos de jan/2017.
+Prática: descer a árvore um nível por vez. metadata.json → snapshot (`summary`: `added-records`) → **manifest list** (`snap-….avro`) → **manifest** (caminho do Parquet, `record_count`, min/max de `order_purchase_timestamp`) → **data file** (`parquet_metadata`, `parquet_schema` com `field_id`).
 *Conceito:* a hierarquia de metadados (diagrama Excalidraw, como no lab Cassandra). O leitor não lista a pasta: ele segue os ponteiros.
 
-**5. Snapshots e commits atômicos.** Carregar fev e mar/2024.
+**5. Snapshots e commits atômicos.** Carregar fev e mar/2017.
 Prática:
 - a cada mês nasce um metadata.json novo, os antigos ficam intactos, e o ponteiro troca no SQLite;
 - a manifest list do snapshot 3 reaproveita os manifests dos meses anteriores;
-- duas cargas concorrentes (abril e um ajuste): a segunda falha com `CommitFailedException`, recarrega e tenta de novo (concorrência otimista).
+- duas cargas de abril disparadas ao mesmo tempo: o segundo commit detecta o conflito, recarrega e entra também (log "retrying"), e abril fica duplicado;
+- duas mudanças de schema concorrentes: aí o commit falha de verdade (`CommitFailedException`).
 
-*Conceito:* um commit é uma troca atômica de ponteiro, e isso resolve o 2.c.
+*Conceito:* um commit é uma troca atômica de ponteiro com concorrência otimista. Isso resolve o 2.c.
 
 **6. Time travel, rollback e tags.**
 Prática:
-- faturamento de jan/2024 "como estava" em cada snapshot (PyIceberg e `iceberg_scan` do DuckDB);
-- tag `fechamento-2024-01`;
-- uma carga errada (abril carregado duas vezes) desfeita com rollback.
+- contagem de pedidos de jan/2017 "como estava" em cada snapshot (PyIceberg e `iceberg_scan` do DuckDB);
+- tag `fechamento-2017-03`;
+- abril duplicado (seção 5) desfeito com rollback.
 
 *Conceito:* snapshots são imutáveis, e voltar no tempo é só apontar para outro. Isso resolve o 2.d.
 
 ### Parte II — Mudar sem reescrever
 
-**7. Schema evolution e field IDs.** O sistema de origem muda: `uf` vira `estado` e aparece `canal` (APP/SITE).
-Prática: renomear e adicionar coluna sem tocar nos Parquet antigos; o `field_id` aparece no schema do Parquet (`parquet_schema`); a consulta por `estado` traz os meses antigos e os novos. É o caso 2.a, agora funcionando.
+**7. Schema evolution e field IDs.** Tabela `olist.products`.
+Prática:
+- corrigir `product_name_lenght` e `product_description_lenght` com rename, sem tocar nos Parquet;
+- adicionar `product_category_name_english` (da tabela de tradução);
+- o `field_id` no `parquet_schema` explica por que o arquivo antigo, ainda com "lenght", é lido com o nome novo. É o caso 2.a, agora funcionando;
+- `sqlite3` mostra duas tabelas no mesmo namespace.
+
 *Conceito:* a identidade da coluna é um ID, não um nome.
 
-**8. Hidden partitioning e pruning por estatísticas.** Recriar a tabela com `month(data_criacao)` e recarregar 2024.
+**8. Hidden partitioning e pruning por estatísticas.** Recriar `orders` com `month(order_purchase_timestamp)` e carregar 2017 (até outubro).
 Prática:
-- a consulta filtra `data_criacao BETWEEN …` sem saber que existe partição;
+- a consulta filtra por data de compra sem saber que existe partição;
 - o manifest guarda os resumos de partição e o min/max;
-- contar os data files lidos com o filtro e sem ele (plan files do PyIceberg, `EXPLAIN ANALYZE` do DuckDB).
+- contar os data files lidos com o filtro e sem ele (`plan_files` do PyIceberg, `Total Files Read` no `EXPLAIN ANALYZE` do DuckDB).
 
 *Conceito:* o leitor não precisa saber como a tabela é particionada. Liga com o min/max do Parquet e do ClickHouse dos outros labs.
 
-**9. Partition evolution.** Novembro/2024 (Black Friday) tem o maior volume do ano, e o time decide particionar por dia daí em diante.
-Prática: `update_spec()` para `day(data_criacao)`; os meses antigos continuam no spec 0 e os novos ficam no spec 1 (`spec_id` em cada manifest); a mesma consulta atravessa os dois.
+**9. Partition evolution.** Vem novembro: a Black Friday de 24/11/2017 tem 1.176 pedidos num dia só, e as análises passam a ser por dia. O time muda o particionamento para `day(order_purchase_timestamp)` dali em diante.
+Prática: `update_spec()`; out/2017 para trás continua no spec mensal e nov/dez no spec diário (`partition_spec_id` em cada manifest); a consulta da semana da Black Friday lê só os arquivos diários daquela semana; uma consulta de 2017 inteiro atravessa os dois specs.
 *Conceito:* o particionamento é metadado, e trocá-lo não reescreve dados.
 
 ### Parte III — Atualizar dados imutáveis
 
-**10. Delete, update e upsert (copy-on-write).**
+**10. Upsert e delete (copy-on-write).** A revelação: o pedido de jan/2017 foi entregue em fevereiro, e a tabela continua dizendo `approved`.
 Prática:
-- upsert do `status` do pedido a partir de `dataset-json-pagamentos` (PAGO, CANCELADO);
-- um cliente pede exclusão pela LGPD: `delete(id_cliente = …)`;
-- ver quais Parquet foram reescritos e a `operation` de cada snapshot (`overwrite` / `delete`);
-- surpresa: com time travel, os dados do cliente continuam acessíveis.
+- a carga mensal vira `upsert` das mudanças (`mudancas('2017-12')`: 5.673 novos e 4.019 atualizados);
+- ver quais Parquet foram reescritos e a `operation` dos snapshots;
+- um cliente pede exclusão pela LGPD: `delete` dos pedidos de todos os `customer_id` dele;
+- surpresa: com time travel, os pedidos do cliente continuam acessíveis.
 
 *Conceito:* os arquivos nunca mudam; o que muda é qual conjunto deles compõe o snapshot. Isso resolve o 2.b, mas abre a questão do esquecimento.
 
-**11. Manutenção: o custo do histórico.** Simular uma carga "quase streaming", com um commit por hora de um dia de pedidos (24 commits pequenos).
-Prática: medir os data files e os bytes de metadados; compactar; expirar snapshots (e confirmar que o cliente da LGPD sumiu de vez, fechando a seção 10); remover arquivos órfãos; medir de novo.
-*Conceito:* small files, crescimento de metadados e retenção versus time travel.
+**11. Manutenção: o custo do histórico.** Acompanhamento "em tempo real" da Black Friday: os pedidos de 24/11/2017 carregados hora a hora (24 commits pequenos).
+Prática:
+- medir os data files e os bytes de metadados;
+- compactar (overwrite do dia);
+- expirar snapshots e descobrir que os pedidos do cliente da LGPD **continuam no disco** em Parquet órfãos (achados com o DuckDB);
+- remover os órfãos e medir de novo.
+
+*Conceito:* small files, crescimento de metadados, retenção versus time travel, e a diferença entre "fora da tabela" e "fora do disco".
 
 **12. Um formato, vários motores (local).** A mesma tabela lida pelo DuckDB direto do metadata.json, sem catálogo, e pelo PyIceberg através do catálogo. Tipos de catálogo (SQL, REST, Glue, S3 Tables) e o papel de cada um.
 Diagrama-síntese da Parte I à III.
 
 ### Parte IV — Na AWS
 
-**13. Do disco local para o S3 com o Glue Data Catalog.** Tentar copiar o warehouse para o S3 e ver o metadata.json apontando para `file:///home/barbosa/...` (os caminhos são absolutos: uma tabela Iceberg não se move com `cp`). Fazer certo: PyIceberg com `GlueCatalog` + S3, carregando os pedidos de novo (a EC2 usa a LabRole).
+**13. Do disco local para o S3 com o Glue Data Catalog.** Tentar copiar o warehouse para o S3 e ver o metadata.json apontando para `file:///home/barbosa/...` (os caminhos são absolutos: uma tabela Iceberg não se move com `cp`). Fazer certo: PyIceberg com `GlueCatalog` + S3, carregando 2017 de novo (a EC2 usa a LabRole).
 Prática: a tabela aparece no console do Glue; o parâmetro `metadata_location` da tabela no Glue faz o mesmo papel da linha do SQLite; `aws s3 ls` mostra os mesmos `metadata/` e `data/`.
 
-**14. Athena: outro motor, merge-on-read.** Consultar no Athena a tabela gravada pelo PyIceberg. Depois `UPDATE`, `DELETE` e `MERGE INTO` no Athena.
+**14. Athena: outro motor, merge-on-read.** Consultar no Athena a tabela gravada pelo PyIceberg. Depois, a carga mensal em SQL: `MERGE INTO orders USING mudancas_2018_01` (uma tabela de staging gravada pelo PyIceberg); um `DELETE` da LGPD.
 Prática:
 - aparecem **delete files posicionais** no S3, e os data files não são reescritos;
-- o aluno inspeciona os delete files com o DuckDB;
-- o PyIceberg e o DuckDB leem a tabela com os deletes aplicados;
-- `OPTIMIZE … REWRITE DATA` e `VACUUM` fazem a manutenção do lado do Athena.
+- o aluno lê um delete file com o DuckDB: pares (`file_path`, `pos`);
+- PyIceberg, DuckDB e Athena dão o mesmo resultado;
+- `OPTIMIZE … REWRITE DATA` incorpora os deletes, e o `VACUUM` apaga os arquivos de verdade (contraste com a seção 11).
 
-*Conceito:* copy-on-write (seção 10) versus merge-on-read: trocar custo de escrita por custo de leitura. Visão geral: o lakehouse do infobarShop.
+*Conceito:* copy-on-write (seção 10) versus merge-on-read: trocar custo de escrita por custo de leitura. Visão geral: o lakehouse que juntou tudo.
 
-**15. Desafio.** **Referências.** **Apêndices** (execução local; limpeza dos recursos na AWS).
+**15. Desafio** (com `order_items` e `order_payments`: faturamento por categoria, com uma mudança de schema e uma consulta de time travel). **Referências.** **Apêndices** (execução local; limpeza dos recursos na AWS).
 
 ## 5. Resultado do spike local (2026-10-12)
 
-Feito num container Ubuntu 24.04 arm64 com **PyIceberg 0.12.0** (+ `pyiceberg-core` 0.10.1), **pyarrow 26**, **DuckDB 1.5.6** (extensões `iceberg` e `avro`). Todas as seções 2 a 12 foram executadas de ponta a ponta com os dados reais do infobarShop.
+Feito num container Ubuntu 24.04 arm64 com **PyIceberg 0.12.0** (+ `pyiceberg-core` 0.10.1), **pyarrow 26**, **DuckDB 1.5.6** (extensões `iceberg` e `avro`). Todas as seções 2 a 12 foram executadas de ponta a ponta com o dataset infobarShop (antes da troca para o Olist; a mecânica do Iceberg não depende do dataset, mas os comandos serão revalidados com o Olist na implementação).
 
 | Seção | Resultado |
 |---|---|
@@ -155,8 +185,7 @@ Feito num container Ubuntu 24.04 arm64 com **PyIceberg 0.12.0** (+ `pyiceberg-co
 | 11. Manutenção | ok. 24 commits de 94 linhas fazem os **metadados crescerem 600 KB e os dados, 65 KB**. Sem `rewrite_data_files` no PyIceberg, a compactação é um `overwrite` do mês (23 → 7 arquivos). O `expire_snapshots` **não apaga arquivos**: os pedidos do cliente da LGPD continuam em 2 Parquet órfãos, encontrados com o DuckDB. A remoção de órfãos fica num script do `lab.py` que compara o disco com `inspect.all_files()`. `write.metadata.delete-after-commit.enabled` limita os metadata.json antigos. |
 
 Outros achados:
-- **Dataset:** o gerador de pedidos só cria datas até o dia 28 de cada mês, então não existe 29/11/2024 (a Black Friday). O lab usa outro dia de novembro ou o problema é corrigido no gerador. A decidir.
-- Os cabeçalhos dos CSVs vêm em maiúsculas e com `\r\n`; o `lab.py` normaliza.
+- **Dataset:** o gerador do infobarShop só cria datas até o dia 28 de cada mês (não existe Black Friday). Esse foi um dos motivos da troca para o Olist.
 - Peso: venv com PyIceberg + Glue = 390 MB, DuckDB + extensões = 125 MB. A imagem final deve ficar em torno de 1,2 GB.
 
 ### Spike AWS (2026-10-12, numa conta real do AWS Academy)
@@ -173,6 +202,7 @@ Testado de um venv local com o perfil do Learner Lab (role `voclabs`). Na EC2 do
 
 Detalhes para o README: o workgroup `primary` precisa de `OutputLocation` (um bucket de resultados criado pelo lab). Para a demonstração, o `VACUUM` precisa de `vacuum_max_snapshot_age_seconds` baixo (o padrão é 5 dias). Os recursos do spike (bucket, database e tabela) foram apagados.
 
-## 6. Em aberto
+## 6. Próximos passos
 
-- Carga horária: 6 a 8 horas, com as 15 seções. Delta Lake e Hudi ficam para labs separados, sem comparativo.
+1. `iceberg-lab-docker-image` (privado): `main` mínima + branch `versao-inicial`, CI multi-arch.
+2. `lab.py` com a derivação mensal do Olist e o README do `iceberg-tableformat-demo` numa branch, com todos os comandos validados num container limpo e a parte AWS validada no Academy.
