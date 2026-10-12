@@ -1,0 +1,25 @@
+#
+# Execução local do laboratório (Apêndice C do README): um container com o
+# code-server, o PyIceberg e o DuckDB.
+#
+#   docker compose up -d
+#
+# Depois, abra http://localhost:8080. Os arquivos ficam em ./workspace.
+#
+# A Parte IV (S3, Glue e Athena) usa as credenciais de ~/.aws, montado somente
+# leitura. Para usar um perfil que não seja o default:
+#
+#   AWS_PROFILE=meu-perfil docker compose up -d
+#
+name: iceberg-tableformat-demo
+services:
+  iceberg-lab:
+    container_name: iceberg-lab
+    image: ghcr.io/infobarbosa/iceberg-lab-docker-image:versao-inicial
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./workspace:/home/barbosa/project
+      - ${HOME}/.aws:/home/barbosa/.aws:ro
+    environment:
+      AWS_PROFILE: ${AWS_PROFILE:-default}
