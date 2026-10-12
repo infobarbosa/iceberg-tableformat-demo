@@ -137,15 +137,33 @@ Prática:
 
 **15. Desafio.** **Referências.** **Apêndices** (execução local; limpeza dos recursos na AWS).
 
-## 5. Riscos a verificar no spike (antes de escrever o README)
+## 5. Resultado do spike local (2026-10-12)
 
-1. **Compactação e expire snapshots no PyIceberg 0.11.x:** confirmar o que a API já oferece. Se faltar compactação, a seção 11 compacta com `overwrite` manual e explica, e o `OPTIMIZE` do Athena fica como a compactação "de verdade".
-2. **`read_avro` do DuckDB** nos manifests do Iceberg (tipos aninhados) e `field_id` visível no `parquet_schema`.
-3. **Athena:** confirmar que `UPDATE`/`DELETE`/`MERGE` gera delete files posicionais (e não deletion vectors v3), e que o PyIceberg e o DuckDB leem a tabela depois disso.
-4. **AWS Academy (Learner Lab):** a LabRole consegue usar Glue e Athena (criar database, tabela e workgroup, e gravar o resultado das consultas no S3)? Este é o ponto que mais preocupa; testo na sua conta do Academy ou peço para você rodar um script de verificação.
-5. Tamanho da imagem e RAM numa t3.medium; build em arm64.
+Feito num container Ubuntu 24.04 arm64 com **PyIceberg 0.12.0** (+ `pyiceberg-core` 0.10.1), **pyarrow 26**, **DuckDB 1.5.6** (extensões `iceberg` e `avro`). Todas as seções 2 a 12 foram executadas de ponta a ponta com os dados reais do infobarShop.
+
+| Seção | Resultado |
+|---|---|
+| 2. Parquet cru | ok. O glob quebra quando `uf` vira `estado` ("schema mismatch in glob"); com `union_by_name`, fevereiro vem com 0 `uf`. |
+| 3. Catálogo | ok. `tree` mostra só o `00000-….metadata.json`; o `sqlite3` mostra a tabela `iceberg_tables` com `metadata_location` e `previous_metadata_location`. |
+| 4. Árvore de metadados | ok. `read_avro` do DuckDB lê a manifest list e o manifest (os bounds ficam em binário; para mostrar min/max legível, usar `inspect.files()` → `readable_metrics`). `parquet_schema` mostra o `field_id`. |
+| 5. Commits | ok, com um bônus: dois appends concorrentes **não** falham, porque o PyIceberg detecta o conflito, recarrega e refaz o commit (log "Commit failed due to a concurrent update, retrying"), e abril fica duplicado. Isso alimenta a seção 6 (rollback). Conflitos que falham de verdade: duas mudanças de schema (`CommitFailedException: current schema id has changed`) e dois deletes (`ValidationException`). |
+| 6. Time travel | ok. `scan(snapshot_id=…)`, tag, `rollback_to_snapshot`; o DuckDB (`iceberg_scan` direto no metadata.json, com `snapshot_from_id`) respeita o rollback. |
+| 7. Schema evolution | ok. O Parquet antigo continua com a coluna `uf` (`field_id` 6) e é lido como `estado`. |
+| 8. Partições e pruning | ok. Filtro de um mês: 1 de 10 arquivos (`plan_files`); o `EXPLAIN ANALYZE` do DuckDB mostra `Total Files Read: 1`. As pastas `mes_criacao=…` aparecem no disco. |
+| 9. Partition evolution | ok. Os specs 1 (month) e 2 (day) convivem; os manifests têm `partition_spec_id` diferente. |
+| 10. Upsert / delete | ok em copy-on-write (o arquivo inteiro de janeiro é reescrito). O delete gera `operation=overwrite`, e o time travel ainda acha o cliente. **Bug do PyIceberg 0.12:** um `upsert` logo depois de um `add_column` falha (ele lê com o schema do snapshot atual). Contorno que vira narrativa: junho já chega com `status_pagamento` (append) e só depois o upsert preenche janeiro. |
+| 11. Manutenção | ok. 24 commits de 94 linhas fazem os **metadados crescerem 600 KB e os dados, 65 KB**. Sem `rewrite_data_files` no PyIceberg, a compactação é um `overwrite` do mês (23 → 7 arquivos). O `expire_snapshots` **não apaga arquivos**: os pedidos do cliente da LGPD continuam em 2 Parquet órfãos, encontrados com o DuckDB. A remoção de órfãos fica num script do `lab.py` que compara o disco com `inspect.all_files()`. `write.metadata.delete-after-commit.enabled` limita os metadata.json antigos. |
+
+Outros achados:
+- **Dataset:** o gerador de pedidos só cria datas até o dia 28 de cada mês, então não existe 29/11/2024 (a Black Friday). O lab usa outro dia de novembro ou o problema é corrigido no gerador. A decidir.
+- Os cabeçalhos dos CSVs vêm em maiúsculas e com `\r\n`; o `lab.py` normaliza.
+- Peso: venv com PyIceberg + Glue = 390 MB, DuckDB + extensões = 125 MB. A imagem final deve ficar em torno de 1,2 GB.
+
+### Pendente: a parte AWS (seções 13 e 14)
+
+1. **AWS Academy (Learner Lab):** a LabRole consegue usar Glue e Athena (criar database e tabela, e gravar o resultado das consultas no S3)?
+2. **Athena:** `UPDATE`/`DELETE`/`MERGE` geram delete files posicionais, e o PyIceberg e o DuckDB leem a tabela depois disso?
 
 ## 6. Em aberto
 
-- Carga horária do bloco de OTF, para calibrar a profundidade (hoje são 15 seções).
-- Se a disciplina também cobre Delta Lake e Hudi, a seção 12 pode ganhar um quadro comparativo (ou isso fica para um lab separado).
+- Carga horária: 6 a 8 horas, com as 15 seções. Delta Lake e Hudi ficam para labs separados, sem comparativo.
