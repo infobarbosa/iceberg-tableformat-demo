@@ -159,10 +159,19 @@ Outros achados:
 - Os cabeçalhos dos CSVs vêm em maiúsculas e com `\r\n`; o `lab.py` normaliza.
 - Peso: venv com PyIceberg + Glue = 390 MB, DuckDB + extensões = 125 MB. A imagem final deve ficar em torno de 1,2 GB.
 
-### Pendente: a parte AWS (seções 13 e 14)
+### Spike AWS (2026-10-12, numa conta real do AWS Academy)
 
-1. **AWS Academy (Learner Lab):** a LabRole consegue usar Glue e Athena (criar database e tabela, e gravar o resultado das consultas no S3)?
-2. **Athena:** `UPDATE`/`DELETE`/`MERGE` geram delete files posicionais, e o PyIceberg e o DuckDB leem a tabela depois disso?
+Testado de um venv local com o perfil do Learner Lab (role `voclabs`). Na EC2 do lab, as credenciais vêm do `LabInstanceProfile`, que o `launch-lab.sh` já anexa.
+
+| Seção | Resultado |
+|---|---|
+| 13. Glue + S3 | ok. `GlueCatalog(client.region=us-east-1)`; a tabela no Glue é `EXTERNAL_TABLE` com `table_type=ICEBERG`, `metadata_location` e `previous_metadata_location`, o mesmo papel da linha do SQLite. O S3 mostra `data/mes_criacao=…/` e `metadata/`, como no disco local. Três commits levaram 28 s saindo do Brasil; na EC2 deve ser bem menos. Detalhe: o spec de partição é criado com `update_spec()` depois do `create_table`, porque o schema Arrow não tem field IDs. |
+| 14. Athena lê | ok. O faturamento por mês bate com o do lab local, e `"pedidos$snapshots"` mostra os appends do PyIceberg. |
+| 14. Athena escreve (merge-on-read) | ok. `DELETE` grava **position delete files** (`added-position-delete-files=2`), e o Parquet original fica intacto (mesmos bytes). `UPDATE` e `MERGE` geram um delete posicional mais um data file novo. O DuckDB lê o delete file como pares (`file_path`, `pos`). |
+| 14. Três motores concordam | ok. Athena, PyIceberg e DuckDB (`CREATE SECRET … PROVIDER credential_chain`) dão o mesmo resultado (4.996 linhas, soma 7.702), com os deletes aplicados. |
+| 14. Manutenção | ok. `OPTIMIZE … REWRITE DATA USING BIN_PACK` incorpora os deletes (`operation=replace`, 0 delete files). `VACUUM` expira os snapshots **e apaga os arquivos do S3**, ao contrário do `expire_snapshots` do PyIceberg. Isso fecha a narrativa da LGPD. |
+
+Detalhes para o README: o workgroup `primary` precisa de `OutputLocation` (um bucket de resultados criado pelo lab). Para a demonstração, o `VACUUM` precisa de `vacuum_max_snapshot_age_seconds` baixo (o padrão é 5 dias). Os recursos do spike (bucket, database e tabela) foram apagados.
 
 ## 6. Em aberto
 
