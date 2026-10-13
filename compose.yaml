@@ -1,5 +1,6 @@
 #
-# Execução local do laboratório (Apêndice C do README): um container com o
+# Execução local do laboratório com Docker Compose (alternativa ao launch-local.sh,
+# Apêndice C do README): um container com o
 # code-server, o PyIceberg e o DuckDB.
 #
 #   docker compose up -d

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script de Provisionamento Automático - Laboratório Apache Iceberg Table Format Demo
+# Provisionamento na AWS (EC2 + code-server) - Laboratório Apache Iceberg Table Format Demo
+# Roda no AWS CloudShell ou em qualquer máquina com a AWS CLI v2 configurada.
 # Autor: Prof. Barbosa (infobarbosa@gmail.com)
 # Repositório: https://github.com/infobarbosa/iceberg-tableformat-demo
 # ==============================================================================

@@ -138,7 +138,7 @@ Não há banco de dados para subir: o Iceberg é um formato de arquivos. O catá
 No terminal do CloudShell, execute:
 
 ```sh
-curl -sS https://raw.githubusercontent.com/infobarbosa/iceberg-tableformat-demo/main/launch-lab.sh | bash
+curl -sS https://raw.githubusercontent.com/infobarbosa/iceberg-tableformat-demo/main/launch-aws.sh | bash
 
 ```
 
@@ -161,7 +161,7 @@ O script realiza de forma automatizada:
 
 ### Retomando o laboratório
 
-Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-lab.sh` novamente.**
+Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-aws.sh` novamente.**
 
 1. No Console AWS (`us-east-1`), acesse **EC2** > **Instances**.
 2. Selecione a instância **`lab-iceberg-tableformat`** e clique em **Instance state** > **Start instance**.
@@ -2926,7 +2926,25 @@ E execute de novo a partir da seção 2.b (ou da 3, se não quiser refazer o lak
 
 ## C. Execução local
 
-O mesmo ambiente roda em qualquer máquina com Docker. Baixe o `compose.yaml` e suba o container:
+O mesmo ambiente roda em qualquer máquina Linux ou macOS com Docker e uns 5 GB livres em disco:
+
+```sh
+curl -sS https://raw.githubusercontent.com/infobarbosa/iceberg-tableformat-demo/main/launch-local.sh | bash
+
+```
+
+O script confere o Docker, a porta e o espaço em disco, baixa a imagem e sobe o container `iceberg-lab`. Depois, abra http://localhost:8080. Os arquivos do laboratório (o `~/project` do container) ficam em `~/iceberg-lab/workspace`.
+
+Rodar o script de novo só religa o container, se ele já existir. Para parar: `docker stop iceberg-lab`. Para recomeçar do zero: `docker rm -f iceberg-lab` e apague `~/iceberg-lab`.
+
+As Partes I a III funcionam sem nada mais. A Parte IV precisa de credenciais AWS: se existir um `~/.aws`, o script o monta dentro do container (somente leitura) com o perfil `default`. Para usar outro perfil, ou outra porta:
+
+```sh
+curl -sS https://raw.githubusercontent.com/infobarbosa/iceberg-tableformat-demo/main/launch-local.sh | AWS_PROFILE=meu-perfil LAB_PORTA=8081 bash
+
+```
+
+**Alternativa com Docker Compose.** O repositório também tem um `compose.yaml` equivalente:
 
 ```sh
 mkdir -p iceberg-lab && cd iceberg-lab
@@ -2935,6 +2953,4 @@ docker compose up -d
 
 ```
 
-Abra http://localhost:8080. As Partes I a III funcionam sem nada mais. A Parte IV precisa de credenciais AWS: o `compose.yaml` monta o seu `~/.aws` dentro do container (somente leitura); defina `AWS_PROFILE` antes do `docker compose up` se não usar o perfil `default`.
-
-Para parar: `docker compose down` (os arquivos ficam na pasta `workspace/`).
+Ele monta `~/.aws` do mesmo jeito (defina `AWS_PROFILE` antes do `docker compose up` se não usar o `default`) e guarda os arquivos em `workspace/`, na pasta em que você o rodou. Para parar: `docker compose down`.
