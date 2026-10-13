@@ -2654,7 +2654,7 @@ O Olist tem mais oito tabelas. Use duas delas para montar, sozinho, o que o rote
 
 1. Crie no catálogo local a tabela `olist.order_items`, particionada de um jeito que você consiga justificar. Carregue os itens de 2017 mês a mês, pela data do pedido.
 2. Responda com uma consulta de **time travel**: qual era o faturamento (soma de `price`) de março de 2017 depois da carga de março? E depois da carga de dezembro? Por que os valores são iguais — ou por que não são?
-3. O time financeiro quer a forma de pagamento em cada item. Acrescente a coluna `payment_type` à tabela (**schema evolution**) e preencha-a para os itens de dezembro com um **upsert**. Quantos data files foram reescritos?
+3. O time financeiro quer a forma de pagamento em cada item. Acrescente a coluna `payment_type` à tabela (**schema evolution**) e preencha-a para os itens de dezembro com um **upsert** (ou com a operação equivalente em copy-on-write). Quantos data files foram reescritos?
 4. Leve a tabela para o Glue, apague no Athena os itens de um vendedor (`seller_id`) que encerrou a conta, e faça a manutenção até que nenhum arquivo do S3 contenha os itens dele.
 
 **O que você deve conseguir responder:**
@@ -2662,6 +2662,207 @@ O Olist tem mais oito tabelas. Use duas delas para montar, sozinho, o que o rote
 - Por que escolheu essa partição, e quantos arquivos cada consulta abriu.
 - Quais snapshots, data files e delete files cada passo criou.
 - Em que momento os itens do vendedor deixaram de ser lidos pela tabela, e em que momento deixaram de existir no S3.
+
+<details>
+<summary><b>Solução de referência</b> (tente antes de abrir)</summary>
+
+Esta é **uma** solução possível; outras escolhas de partição e de chave também são defensáveis, desde que justificadas. Os blocos pressupõem as Partes I a III concluídas (o catálogo local e o `dados/lgpd.json` existem) e, no passo 4, a Parte IV (bucket e database `olist` no Glue).
+
+#### Passo 1 — A tabela de itens
+
+Os itens não têm data própria de compra: ela vem do pedido. A função `itens_do_mes` junta cada item com o `order_purchase_timestamp` do seu pedido, e a tabela é particionada pelo **mês** dessa data. O mês, e não o dia: são cerca de 4 a 9 mil itens por mês — numa partição diária, cada arquivo teria poucas centenas de linhas (a lição da seção 11).
+
+```sh
+# 15.a.1
+python3 - <<'EOF'
+from lab import *
+import duckdb
+from pyiceberg.transforms import MonthTransform
+
+def itens_do_mes(mes):
+    pedidos = pedidos_novos(mes)
+    return duckdb.sql(f"""
+        SELECT i.*, p.order_purchase_timestamp
+        FROM read_csv('{arquivo("order_items")}') i JOIN pedidos p USING (order_id)
+        ORDER BY i.order_id, i.order_item_id
+    """).arrow().read_all()
+
+t = catalogo().create_table("olist.order_items", schema=itens_do_mes("2017-01").schema)
+with t.update_spec() as spec:
+    spec.add_field("order_purchase_timestamp", MonthTransform(), "mes_compra")
+for mes in range(1, 13):
+    t.append(itens_do_mes(f"2017-{mes:02d}"))
+
+marco = "order_purchase_timestamp >= '2017-03-01T00:00:00' and order_purchase_timestamp < '2017-04-01T00:00:00'"
+print(t.scan().to_arrow().num_rows, "itens em", len(t.snapshots()), "snapshots")
+print("arquivos da tabela:", len(list(t.scan().plan_files())), "| para ler março:", len(list(t.scan(row_filter=marco).plan_files())))
+EOF
+
+```
+
+```
+50864 itens em 12 snapshots
+arquivos da tabela: 12 | para ler março: 1
+```
+
+Doze commits, um por mês, e um data file por partição. Uma consulta de março abre um arquivo.
+
+#### Passo 2 — Time travel
+
+```sh
+# 15.b.1
+python3 - <<'EOF'
+from lab import *
+import pyarrow.compute as pc
+
+t = tabela("olist.order_items")
+marco = "order_purchase_timestamp >= '2017-03-01T00:00:00' and order_purchase_timestamp < '2017-04-01T00:00:00'"
+apos_marco = t.snapshots()[2]
+for nome, snap in [("depois da carga de março   ", apos_marco), ("depois da carga de dezembro", t.current_snapshot())]:
+    itens = t.scan(snapshot_id=snap.snapshot_id, row_filter=marco).to_arrow()
+    print(nome, round(pc.sum(itens["price"]).as_py(), 2))
+EOF
+
+```
+
+```
+depois da carga de março    374344.3
+depois da carga de dezembro 374344.3
+```
+
+Os valores são **iguais**: as cargas de abril a dezembro só acrescentaram itens de pedidos comprados naqueles meses (`append`); nenhuma tocou nos arquivos de março. Seriam diferentes se a carga trouxesse correções de itens antigos — por exemplo, com um upsert, como o da seção 10.
+
+#### Passo 3 — Schema evolution e o upsert de dezembro
+
+Um pedido pode ter vários pagamentos (um voucher e um cartão, por exemplo). Para cada pedido, a forma de pagamento escolhida é a de maior valor.
+
+O upsert tem uma armadilha no PyIceberg 0.12: logo depois de um `add_column`, ele falha, porque procura as linhas existentes com o schema do snapshot atual, que ainda não tem a coluna nova. Como o upsert, em copy-on-write, é um `overwrite` das linhas casadas seguido de um `append`, o mesmo efeito se obtém com um `overwrite` filtrado pelos itens de dezembro, num commit só:
+
+```sh
+# 15.c.1
+python3 - <<'EOF'
+from lab import *
+import duckdb
+from pyiceberg.types import StringType
+
+t = tabela("olist.order_items")
+with t.update_schema() as u:
+    u.add_column("payment_type", StringType())
+
+dezembro = "order_purchase_timestamp >= '2017-12-01T00:00:00' and order_purchase_timestamp < '2018-01-01T00:00:00'"
+itens_dez = t.scan(row_filter=dezembro).to_arrow()
+com_pagamento = duckdb.sql(f"""
+    SELECT i.* EXCLUDE (payment_type), p.payment_type
+    FROM itens_dez i
+    LEFT JOIN (SELECT order_id, arg_max(payment_type, payment_value) AS payment_type
+               FROM read_csv('{arquivo("order_payments")}') GROUP BY order_id) p USING (order_id)
+""").arrow().read_all().cast(t.schema().as_arrow())
+
+antes = {f.file.file_path for f in t.scan().plan_files()}
+t.overwrite(com_pagamento, overwrite_filter=dezembro)
+depois = {f.file.file_path for f in t.scan().plan_files()}
+
+print("data files reescritos:", len(antes - depois), "| novos:", len(depois - antes), "| de", len(depois), "na tabela")
+duckdb.sql("SELECT payment_type, count(*) AS itens FROM com_pagamento GROUP BY 1 ORDER BY 2 DESC").show()
+EOF
+
+```
+
+```
+data files reescritos: 1 | novos: 1 | de 12 na tabela
+┌──────────────┬───────┐
+│ payment_type │ itens │
+│   varchar    │ int64 │
+├──────────────┼───────┤
+│ credit_card  │  4721 │
+│ boleto       │  1325 │
+│ voucher      │   195 │
+│ debit_card   │    67 │
+└──────────────┴───────┘
+```
+
+Só o arquivo de dezembro foi reescrito: a partição mensal confinou o copy-on-write a um mês. Os itens de janeiro a novembro continuam com `payment_type` nulo — o schema evolution não preenche o passado.
+
+#### Passo 4 — Glue, Athena e o vendedor que saiu
+
+```sh
+# 15.d.1
+python3 - <<'EOF'
+from lab import *
+from pyiceberg.transforms import MonthTransform
+
+itens = tabela("olist.order_items").scan().to_arrow()
+t = catalogo_glue().create_table("olist.order_items", schema=itens.schema,
+                                 location=f"s3://{bucket_do_lab()}/warehouse/order_items")
+with t.update_spec() as spec:
+    spec.add_field("order_purchase_timestamp", MonthTransform(), "mes_compra")
+t.append(itens)
+print(t.scan().to_arrow().num_rows, "itens no Glue")
+EOF
+athena "SELECT seller_id, count(*) AS itens FROM order_items GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+
+```
+
+```
+50864 itens no Glue
+seller_id                         itens
+cc419e0650a3c5ba77189a1882b7556a  1258
+```
+
+O vendedor com mais itens em 2017 é o que "encerrou a conta". O delete:
+
+```sh
+# 15.d.2
+VENDEDOR=$(athena "SELECT seller_id FROM order_items GROUP BY 1 ORDER BY count(*) DESC LIMIT 1" | tail -1)
+echo "$VENDEDOR" > dados/vendedor.txt
+athena "DELETE FROM order_items WHERE seller_id = '${VENDEDOR}'"
+athena "SELECT count(*) AS itens_do_vendedor FROM order_items WHERE seller_id = '${VENDEDOR}'"
+athena "SELECT operation, summary['added-position-delete-files'] AS delete_files, summary['added-position-deletes'] AS linhas_marcadas
+        FROM \"order_items\$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+
+```
+
+```
+itens_do_vendedor
+0
+operation  delete_files  linhas_marcadas
+overwrite  12            1258
+```
+
+**Aqui** os itens deixam de ser lidos pela tabela: o commit do `DELETE` gravou position delete files (merge-on-read), e todo leitor os aplica. Mas os data files com os itens continuam no S3. A manutenção:
+
+```sh
+# 15.d.3
+VENDEDOR=$(cat dados/vendedor.txt)
+BUCKET=iceberg-lab-$(aws sts get-caller-identity --query Account --output text)
+athena "OPTIMIZE order_items REWRITE DATA USING BIN_PACK"
+athena "ALTER TABLE order_items SET TBLPROPERTIES ('vacuum_max_snapshot_age_seconds' = '60', 'vacuum_min_snapshots_to_keep' = '1')"
+echo "aguardando um minuto..."; sleep 65
+athena "VACUUM order_items"
+duckdb -noheader -list -c "
+CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'us-east-1');
+SELECT 'itens do vendedor nos Parquet do S3: ' || count(*)
+FROM read_parquet('s3://${BUCKET}/warehouse/order_items/data/**/*.parquet', union_by_name = true)
+WHERE seller_id = '${VENDEDOR}'" | tail -1
+
+```
+
+```
+aguardando um minuto...
+itens do vendedor nos Parquet do S3: 0
+```
+
+O `OPTIMIZE` regravou os data files afetados sem as linhas marcadas (e incorporou os delete files); o `VACUUM` expirou os snapshots antigos e apagou os arquivos órfãos. **Aqui** os itens deixam de existir no S3.
+
+#### As respostas
+
+- **Partição:** mensal, pela data de compra do pedido — um arquivo por mês, de tamanho razoável para o volume; uma consulta de um mês abre um arquivo, e o upsert de dezembro reescreveu um só.
+- **Snapshots e arquivos:** passo 1, doze `append` (um data file cada); passo 2, nenhum (só leitura); passo 3, um commit de schema (só metadados) e um `overwrite` (um data file removido, um novo); passo 4, um `append` no Glue, um `overwrite` do `DELETE` (position delete files, nenhum data file reescrito), um `replace` do `OPTIMIZE` (data files regravados, delete files removidos) e o `VACUUM`, que não cria snapshot — apaga.
+- **Os dois momentos:** os itens deixam de ser **lidos** no commit do `DELETE`; deixam de **existir** no `VACUUM`, depois do `OPTIMIZE`. Entre os dois, qualquer um com acesso ao bucket ainda os encontra nos Parquet.
+
+Para apagar a tabela do desafio na AWS: `aws glue delete-table --database-name olist --name order_items` (o bucket inteiro sai no [Apêndice A](#a-encerrando-o-ambiente)).
+
+</details>
 
 ---
 
@@ -2695,6 +2896,7 @@ O Olist tem mais oito tabelas. Use duas delas para montar, sozinho, o que o rote
 ```sh
 BUCKET=iceberg-lab-$(aws sts get-caller-identity --query Account --output text)
 aws glue delete-table --database-name olist --name mudancas_2018_01
+aws glue delete-table --database-name olist --name order_items 2>/dev/null   # só se fez o desafio
 aws glue delete-table --database-name olist --name orders
 aws glue delete-database --name olist
 aws s3 rb "s3://${BUCKET}" --force
