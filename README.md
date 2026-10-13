@@ -211,8 +211,11 @@ Essa "tabela", porém, é só uma convenção: **a tabela é o que estiver na pa
 
 ### 2.a. Os dados do Olist
 
+Todos os comandos do roteiro rodam na pasta `~/project`, onde o terminal do code-server já abre. O primeiro bloco garante isso com um `cd`; se você abrir outro terminal, confira com `pwd`.
+
 ```sh
 # 2.a.1
+cd ~/project
 mkdir -p dados
 curl -sSL -o dados/olist_orders_dataset.csv.gz \
   https://raw.githubusercontent.com/infobarbosa/dataset-olist/main/data/olist_orders_dataset.csv.gz
@@ -423,7 +426,7 @@ Para mudar o status de alguns pedidos, o arquivo do mês inteiro foi lido e regr
 
 ### 2.e. Problema 3: a leitura no meio da escrita
 
-Uma carga de abril grava quatro arquivos, um a cada dois segundos, em segundo plano. Enquanto isso, um relatório conta os pedidos:
+Uma carga de abril grava quatro arquivos, um a cada dois segundos, em segundo plano (o `&` no fim do bloco entre parênteses). Enquanto isso, um relatório conta os pedidos:
 
 ```sh
 # 2.e.1
@@ -432,7 +435,7 @@ Uma carga de abril grava quatro arquivos, um a cada dois segundos, em segundo pl
     COPY (SELECT * FROM 'dados/olist_orders_dataset.csv.gz'
           WHERE strftime(order_purchase_timestamp, '%Y-%m') = '2017-04'
             AND hash(order_id) % 4 = $parte - 1)
-    TO 'lake/orders/2017-04-parte-$parte.parquet'"
+    TO 'lake/orders/2017-04-parte-$parte.parquet'" < /dev/null > /dev/null 2>&1
     sleep 2
   done ) &
 sleep 3
@@ -456,6 +459,8 @@ duckdb -c "SELECT count(*) AS pedidos_de_abril FROM 'lake/orders/2017-04-*.parqu
 │             2404 │
 └──────────────────┘
 ```
+
+O `< /dev/null > /dev/null 2>&1` desliga a carga do terminal. Sem ele, o DuckDB em segundo plano tentaria conversar com o terminal, e o shell o suspenderia (`Stopped`).
 
 O primeiro relatório contou abril pela metade — e não tinha como saber. Não existe, na pasta, nenhuma marca de "carga concluída": o leitor vê os arquivos que existirem na hora em que o motor lista a pasta.
 
