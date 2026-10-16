@@ -124,7 +124,7 @@ Não há banco de dados para subir: o Iceberg é um formato de arquivos. O catá
 > **ATENÇÃO:**
 > 1. **Região:** utilize sempre a região **Norte da Virgínia (`us-east-1`)** no Console AWS.
 > 2. **Custos:** a instância EC2 e o volume EBS consomem créditos do seu laboratório AWS Academy. Ao encerrar a aula, garanta que a instância esteja parada (**Stopped**) ou aguarde o desligamento automático da sessão.
-> 3. **Não recrie a máquina:** se a instância já existir, siga as instruções de [Retomando o laboratório](#retomando-o-laboratório).
+> 3. **Não recrie a máquina para continuar o trabalho:** cada execução do `launch-aws.sh` cria uma instância **nova e vazia**, com data e hora no nome. Se a sua instância já existir, siga as instruções de [Retomando o laboratório](#retomando-o-laboratório). Se precisar mesmo recriar, encerre a anterior (**Instance state** > **Terminate instance**) para não consumir créditos.
 
 ### Passo 1: Abrir o AWS CloudShell
 
@@ -146,7 +146,7 @@ O script realiza de forma automatizada:
 
 - Descoberta da VPC padrão e de uma subnet pública.
 - Criação do Security Group `lab-iceberg-sg`, liberando as portas `8080` (IDE) e `22` (SSH).
-- Lançamento da instância EC2 `lab-iceberg-tableformat` (`t3.medium`, Ubuntu 24.04, 20 GB gp3), com o perfil `LabInstanceProfile` — é por ele que o container acessa S3, Glue e Athena na Parte IV, sem chaves de acesso.
+- Lançamento de uma nova instância EC2 `lab-iceberg-tableformat-AAAA-MM-DD_HH_MI_SS` (`t3.medium`, sufixo com a data e hora da execução, Ubuntu 24.04, 20 GB gp3), com o perfil `LabInstanceProfile` — é por ele que o container acessa S3, Glue e Athena na Parte IV, sem chaves de acesso.
 - Instalação do Docker e inicialização do container `iceberg-lab`.
 - Exibição do IP público e do link de acesso.
 
@@ -161,10 +161,10 @@ O script realiza de forma automatizada:
 
 ### Retomando o laboratório
 
-Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-aws.sh` novamente.**
+Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-aws.sh` novamente:** ele criaria uma instância nova, sem o seu trabalho.
 
 1. No Console AWS (`us-east-1`), acesse **EC2** > **Instances**.
-2. Selecione a instância **`lab-iceberg-tableformat`** e clique em **Instance state** > **Start instance**.
+2. Selecione a sua instância **`lab-iceberg-tableformat-<data e hora>`** (se houver mais de uma, a mais recente) e clique em **Instance state** > **Start instance**.
 3. Aguarde o status **Running** e copie o novo **Public IPv4 address** (ele muda a cada reinício).
 4. Acesse `http://<NOVO_IP_PUBLICO>:8080`. O container reinicia automaticamente, e tudo o que está em `~/project` — os dados baixados e as tabelas — é preservado.
 
@@ -2908,7 +2908,7 @@ aws s3 rb "s3://${BUCKET}" --force
 
 ```
 
-**A instância.** No Console AWS, em **EC2** > **Instances**, selecione `lab-iceberg-tableformat` e use **Instance state** > **Stop instance** para pausar (os arquivos em `~/project` são preservados) ou **Terminate instance** para apagar tudo.
+**A instância.** No Console AWS, em **EC2** > **Instances**, selecione a sua instância `lab-iceberg-tableformat-<data e hora>` e use **Instance state** > **Stop instance** para pausar (os arquivos em `~/project` são preservados) ou **Terminate instance** para apagar tudo.
 
 ## B. Troubleshooting
 
