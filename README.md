@@ -16,7 +16,8 @@ Os comandos são copy-paste no terminal do laboratório, na ordem em que aparece
 
 - Explicar o que um formato de tabela resolve que uma pasta de arquivos Parquet não resolve.
 - Descrever as três camadas do Iceberg — **catálogo, metadados e dados** — e seguir, num terminal, o caminho de uma consulta: catálogo → `metadata.json` → **manifest list** → **manifest** → **data file**.
-- Explicar por que um **commit** é atômico e o que a **concorrência otimista** faz quando dois escritores gravam ao mesmo tempo.
+- Dizer o que se pede a um **catálogo** — e o que ele não faz — e explicar por que é a troca de um ponteiro no catálogo que torna um **commit** atômico.
+- Explicar o que a **concorrência otimista** faz quando dois escritores gravam ao mesmo tempo.
 - Consultar versões anteriores de uma tabela (**time travel**), marcar versões com **tags** e desfazer uma carga com **rollback**.
 - Mudar o schema (**schema evolution**) e o particionamento (**partition evolution**) sem reescrever dados, e explicar o papel dos **field IDs**.
 - Explicar o **hidden partitioning** e medir quantos arquivos o **pruning** evita ler.
@@ -119,7 +120,7 @@ Os blocos marcados **Provoque este erro** falham de propósito: a mensagem de er
 
 O laboratório roda em uma instância **AWS EC2** (`t3.medium`) criada automaticamente a partir do **AWS CloudShell**. A instância executa um único container com o **code-server** (Visual Studio Code no navegador), o PyIceberg e o DuckDB.
 
-Não há banco de dados para subir: o Iceberg é um formato de arquivos. O catálogo é um arquivo SQLite e cada tabela é uma pasta.
+Não há banco de dados para subir: o Iceberg é um formato de arquivos. O catálogo é um arquivo SQLite, e os arquivos de cada tabela ficam numa pasta.
 
 > **ATENÇÃO:**
 > 1. **Região:** utilize sempre a região **Norte da Virgínia (`us-east-1`)** no Console AWS.
@@ -227,8 +228,8 @@ ls -lh dados
 
 ```
 total 7.7M
--rw-r--r-- 1 barbosa barbosa 6.7M Oct 12 22:33 olist_orders_dataset.csv.gz
--rw-r--r-- 1 barbosa barbosa 1.1M Oct 12 22:33 olist_products_dataset.csv.gz
+-rw-r--r-- 1 barbosa barbosa 6.7M Nov  2 23:17 olist_orders_dataset.csv.gz
+-rw-r--r-- 1 barbosa barbosa 1.1M Nov  2 23:17 olist_products_dataset.csv.gz
 ```
 
 O DuckDB lê o CSV comprimido direto, sem carga prévia:
@@ -301,9 +302,9 @@ ls -l lake/orders
 
 ```
 total 496
--rw-r--r-- 1 barbosa barbosa  77158 Oct 12 22:33 2017-01.parquet
--rw-r--r-- 1 barbosa barbosa 168081 Oct 12 22:33 2017-02.parquet
--rw-r--r-- 1 barbosa barbosa 254010 Oct 12 22:33 2017-03.parquet
+-rw-r--r-- 1 barbosa barbosa  77158 Nov  2 23:17 2017-01.parquet
+-rw-r--r-- 1 barbosa barbosa 168081 Nov  2 23:17 2017-02.parquet
+-rw-r--r-- 1 barbosa barbosa 254010 Nov  2 23:17 2017-03.parquet
 ```
 
 E consulte a pasta inteira com um glob:
@@ -417,9 +418,9 @@ ls -l lake/orders
 
 ```
 total 496
--rw-r--r-- 1 barbosa barbosa  77309 Oct 12 22:33 2017-01.parquet
--rw-r--r-- 1 barbosa barbosa 168081 Oct 12 22:33 2017-02.parquet
--rw-r--r-- 1 barbosa barbosa 254010 Oct 12 22:33 2017-03.parquet
+-rw-r--r-- 1 barbosa barbosa  77309 Nov  2 23:17 2017-01.parquet
+-rw-r--r-- 1 barbosa barbosa 168081 Nov  2 23:17 2017-02.parquet
+-rw-r--r-- 1 barbosa barbosa 254010 Nov  2 23:17 2017-03.parquet
 ```
 
 Para mudar o status de alguns pedidos, o arquivo do mês inteiro foi lido e regravado. Com um mês de 7 mil pedidos isso é rápido; com um mês de 70 milhões, é uma tarde de cluster. E durante a reescrita, quem estivesse lendo...
@@ -476,13 +477,13 @@ ls -l lake/orders
 
 ```
 total 736
--rw-r--r-- 1 barbosa barbosa  77309 Oct 12 22:33 2017-01.parquet
--rw-r--r-- 1 barbosa barbosa 168081 Oct 12 22:33 2017-02.parquet
--rw-r--r-- 1 barbosa barbosa 254010 Oct 12 22:33 2017-03.parquet
--rw-r--r-- 1 barbosa barbosa  59698 Oct 12 22:33 2017-04-parte-1.parquet
--rw-r--r-- 1 barbosa barbosa  58433 Oct 12 22:33 2017-04-parte-2.parquet
--rw-r--r-- 1 barbosa barbosa  57380 Oct 12 22:33 2017-04-parte-3.parquet
--rw-r--r-- 1 barbosa barbosa  60396 Oct 12 22:33 2017-04-parte-4.parquet
+-rw-r--r-- 1 barbosa barbosa  77309 Nov  2 23:17 2017-01.parquet
+-rw-r--r-- 1 barbosa barbosa 168081 Nov  2 23:17 2017-02.parquet
+-rw-r--r-- 1 barbosa barbosa 254010 Nov  2 23:17 2017-03.parquet
+-rw-r--r-- 1 barbosa barbosa  59698 Nov  2 23:17 2017-04-parte-1.parquet
+-rw-r--r-- 1 barbosa barbosa  58433 Nov  2 23:17 2017-04-parte-2.parquet
+-rw-r--r-- 1 barbosa barbosa  57380 Nov  2 23:17 2017-04-parte-3.parquet
+-rw-r--r-- 1 barbosa barbosa  60396 Nov  2 23:17 2017-04-parte-4.parquet
 ```
 
 ### 2.g. O que você deve conseguir explicar
@@ -510,18 +511,23 @@ flowchart TB
     C --> M --> D
 ```
 
-- **Catálogo**: guarda, para cada tabela, um único ponteiro — o caminho do `metadata.json` atual. Pode ser um banco relacional, o AWS Glue, um serviço REST. Aqui é um arquivo SQLite.
+- **Catálogo**: é a quem um motor pergunta pela tabela, pelo nome. Para cada tabela, ele guarda um único ponteiro — o caminho do `metadata.json` atual. Pode ser um banco relacional, o AWS Glue, um serviço REST. Aqui é um arquivo SQLite.
 - **Metadados**: arquivos JSON e Avro que descrevem a tabela — schema, particionamento, versões e a lista de arquivos de dados de cada versão.
 - **Dados**: arquivos Parquet comuns. O Iceberg não inventa um formato de dados novo.
 
 ### 3.a. Criando o catálogo e a tabela
 
+Um catálogo se configura com duas informações, e elas são independentes: onde **ele** guarda os ponteiros e onde **as tabelas** guardam os seus arquivos.
+
 ```sh
 # 3.a.1
 python3 - <<'EOF'
 from lab import *
+from pyiceberg.catalog.sql import SqlCatalog
 
-c = catalogo()
+c = SqlCatalog("olist",
+               uri="sqlite:////home/barbosa/project/catalogo.db",    # onde o catálogo guarda os ponteiros
+               warehouse="file:///home/barbosa/project/warehouse")  # onde as tabelas guardam os arquivos
 c.create_namespace("olist")
 t = c.create_table("olist.orders", schema=pedidos_novos("2017-01").schema)
 print(t.schema())
@@ -542,30 +548,35 @@ table {
 }
 ```
 
-Três coisas aconteceram: o catálogo foi criado (`catalogo()` aponta para `warehouse/catalogo.db`), o namespace `olist` — o equivalente a um database ou schema — e a tabela `orders`, com o schema dos pedidos. A tabela ainda está **vazia**: `pedidos_novos("2017-01")` foi usado só para tirar dele o schema.
+Três coisas aconteceram: o catálogo foi criado (o `SqlCatalog` cria o arquivo `catalogo.db` na primeira vez), o namespace `olist` — o equivalente a um database ou schema — e a tabela `orders`, com o schema dos pedidos. A tabela ainda está **vazia**: `pedidos_novos("2017-01")` foi usado só para tirar dele o schema.
+
+Daqui em diante, os blocos usam `catalogo()`, do `lab.py`, que devolve exatamente esse `SqlCatalog` — só para não repetir a configuração em cada bloco.
 
 Repare nos números antes de cada coluna. São os **field IDs**: cada coluna recebe um ID inteiro quando nasce, e ele nunca muda. Eles serão a chave da seção 7.
 
 ### 3.b. O que existe no disco
 
+Sem as pastas da seção 2 (`dados` e `lake`):
+
 ```sh
 # 3.b.1
-tree warehouse
+tree -I 'dados|lake'
 
 ```
 
 ```
-warehouse
+.
 ├── catalogo.db
-└── olist
-    └── orders
-        └── metadata
-            └── 00000-42bfe785-e881-4469-86a4-009d1d4d1a2a.metadata.json
+└── warehouse
+    └── olist
+        └── orders
+            └── metadata
+                └── 00000-7e1aa439-5167-4bea-9929-c8e0212aa92d.metadata.json
 
-4 directories, 2 files
+5 directories, 2 files
 ```
 
-Um arquivo de catálogo e um de metadados. Nenhum dado. Abra o `metadata.json`:
+As duas peças da configuração, separadas: o catálogo (`catalogo.db`) e o armazenamento (`warehouse/`). No armazenamento, a pasta da tabela tem um único arquivo de metadados. Nenhum dado. Abra o `metadata.json`:
 
 ```sh
 # 3.b.2
@@ -602,7 +613,7 @@ jq '{"format-version", location, "current-snapshot-id", snapshots,
 
 ```sh
 # 3.c.1
-sqlite3 -line warehouse/catalogo.db \
+sqlite3 -line catalogo.db \
   "SELECT table_namespace, table_name, metadata_location, previous_metadata_location FROM iceberg_tables"
 
 ```
@@ -610,18 +621,58 @@ sqlite3 -line warehouse/catalogo.db \
 ```
            table_namespace = olist
                 table_name = orders
-         metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00000-42bfe785-e881-4469-86a4-009d1d4d1a2a.metadata.json
-previous_metadata_location =
+         metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00000-7e1aa439-5167-4bea-9929-c8e0212aa92d.metadata.json
+previous_metadata_location = 
 ```
 
-Essa linha é tudo o que o catálogo sabe sobre a tabela: o nome e o caminho do `metadata.json` atual. Todo o resto — schema, versões, arquivos — está nos metadados. É por isso que trocar de catálogo (de SQLite para Glue, por exemplo) é uma operação pequena: os metadados vão junto com os dados.
+Essa linha é tudo o que o catálogo sabe sobre a tabela: o nome e o caminho do `metadata.json` atual. Todo o resto — schema, versões, arquivos — está nos metadados, no armazenamento.
+
+E é só isso que um motor pede ao catálogo para ler a tabela. A função `espia()`, do `lab.py`, imprime cada comando SQL que o catálogo executa:
+
+```sh
+# 3.c.2
+python3 - <<'EOF'
+from lab import *
+
+c = catalogo()
+espia(c)
+t = c.load_table("olist.orders")
+print("→", t.metadata_location)
+EOF
+
+```
+
+```
+SELECT catalog_name, table_namespace, table_name, metadata_location, previous_metadata_location
+  FROM iceberg_tables
+ WHERE catalog_name = 'olist' AND table_namespace = 'olist' AND table_name = 'orders'
+   AND (iceberg_type = 'TABLE' OR iceberg_type IS NULL)
+
+→ file:///home/barbosa/project/warehouse/olist/orders/metadata/00000-7e1aa439-5167-4bea-9929-c8e0212aa92d.metadata.json
+```
+
+Uma pergunta pelo nome, uma resposta com o caminho. (O filtro por `iceberg_type` existe porque a mesma tabela do catálogo também pode guardar views.) Daí em diante, o motor não fala mais com o catálogo: lê o `metadata.json` e, a partir dele, o resto da árvore, direto do armazenamento. (Nos próximos blocos, `tabela()`, do `lab.py`, faz exatamente isso: `catalogo().load_table("olist.orders")`.)
+
+```mermaid
+sequenceDiagram
+    participant M as Motor (PyIceberg)
+    participant C as Catálogo (catalogo.db)
+    participant A as Armazenamento (warehouse/)
+    M->>C: onde está olist.orders?
+    C-->>M: …/metadata/00000-….metadata.json
+    M->>A: lê o metadata.json
+    Note over M,A: e, a partir dele, manifests e data files (seção 4)
+```
+
+Até aqui, o catálogo fez duas das três coisas que se pedem a ele: **guardar nomes** (o namespace `olist` e a tabela `orders`) e **dizer qual é o `metadata.json` atual** de cada tabela. A terceira, a mais importante, aparece quando a tabela muda: na seção 5.
 
 ### 3.d. O que você deve conseguir explicar
 
 - As três camadas do Iceberg e o que cada uma guarda.
+- As duas configurações de um catálogo, e por que uma não depende da outra.
+- O que um motor pergunta ao catálogo para ler uma tabela — e o que ele lê sem o catálogo.
 - Por que um leitor de tabela Iceberg não precisa listar a pasta.
 - O que é o field ID de uma coluna.
-- O que o catálogo guarda — e o que ele não guarda.
 
 ---
 
@@ -646,7 +697,7 @@ EOF
 ```
 
 ```
-Operation.APPEND: id=2131756834734027053, schema_id=0
+Operation.APPEND: id=4128508298934004710, schema_id=0
 ```
 
 ```sh
@@ -658,12 +709,12 @@ tree warehouse/olist/orders
 ```
 warehouse/olist/orders
 ├── data
-│   └── 00000-0-e8791198-c25a-4af1-9493-c6f08789f7bd.parquet
+│   └── 00000-0-469250f4-dc1f-4b76-9910-c946d66fbd78.parquet
 └── metadata
-    ├── 00000-42bfe785-e881-4469-86a4-009d1d4d1a2a.metadata.json
-    ├── 00001-6561e41b-5c97-4a90-a77b-498bd0a24181.metadata.json
-    ├── e8791198-c25a-4af1-9493-c6f08789f7bd-m0.avro
-    └── snap-2131756834734027053-0-e8791198-c25a-4af1-9493-c6f08789f7bd.avro
+    ├── 00000-7e1aa439-5167-4bea-9929-c8e0212aa92d.metadata.json
+    ├── 00001-8a94d89d-5826-49d0-b9ca-cca642fe040e.metadata.json
+    ├── 469250f4-dc1f-4b76-9910-c946d66fbd78-m0.avro
+    └── snap-4128508298934004710-0-469250f4-dc1f-4b76-9910-c946d66fbd78.avro
 
 3 directories, 5 files
 ```
@@ -691,10 +742,10 @@ jq '.snapshots' warehouse/olist/orders/metadata/00001-*.metadata.json
 ```
 [
   {
-    "snapshot-id": 2131756834734027053,
+    "snapshot-id": 4128508298934004710,
     "sequence-number": 1,
-    "timestamp-ms": 1791844396653,
-    "manifest-list": "file:///home/barbosa/project/warehouse/olist/orders/metadata/snap-2131756834734027053-0-e8791198-c25a-4af1-9493-c6f08789f7bd.avro",
+    "timestamp-ms": 1793661465845,
+    "manifest-list": "file:///home/barbosa/project/warehouse/olist/orders/metadata/snap-4128508298934004710-0-469250f4-dc1f-4b76-9910-c946d66fbd78.avro",
     "summary": {
       "operation": "append",
       "added-files-size": "51528",
@@ -727,8 +778,8 @@ FROM read_avro('warehouse/olist/orders/metadata/snap-*.avro')"
 ```
 
 ```
-    manifest_path = file:///home/barbosa/project/warehouse/olist/orders/metadata/e8791198-c25a-4af1-9493-c6f08789f7bd-m0.avro
-added_snapshot_id = 2131756834734027053
+    manifest_path = file:///home/barbosa/project/warehouse/olist/orders/metadata/469250f4-dc1f-4b76-9910-c946d66fbd78-m0.avro
+added_snapshot_id = 4128508298934004710
 added_files_count = 1
  added_rows_count = 800
 partition_spec_id = 0
@@ -749,7 +800,7 @@ FROM read_avro('warehouse/olist/orders/metadata/*-m0.avro')"
 
 ```
             status = 1
-         file_path = file:///home/barbosa/project/warehouse/olist/orders/data/00000-0-e8791198-c25a-4af1-9493-c6f08789f7bd.parquet
+         file_path = file:///home/barbosa/project/warehouse/olist/orders/data/00000-0-469250f4-dc1f-4b76-9910-c946d66fbd78.parquet
        file_format = PARQUET
       record_count = 800
 file_size_in_bytes = 51528
@@ -826,7 +877,7 @@ O DuckDB lê a tabela a partir do `metadata.json` — sem catálogo e sem listar
 M=$(ls warehouse/olist/orders/metadata/00001-*.metadata.json)
 duckdb -c "
 SELECT order_status, count(*) AS pedidos
-FROM iceberg_scan('$M') GROUP BY ALL ORDER BY 2 DESC"
+FROM iceberg_scan('$M') GROUP BY ALL ORDER BY 2 DESC, 1"
 
 ```
 
@@ -879,9 +930,9 @@ EOF
 │      committed_at       │     snapshot_id     │      parent_id      │ operation │
 │      timestamp_ms       │        int64        │        int64        │  varchar  │
 ├─────────────────────────┼─────────────────────┼─────────────────────┼───────────┤
-│ 2026-10-12 22:33:16.653 │ 2131756834734027053 │                NULL │ append    │
-│ 2026-10-12 22:33:17.96  │ 7296911361541680023 │ 2131756834734027053 │ append    │
-│ 2026-10-12 22:33:18.121 │ 7865760153420897185 │ 7296911361541680023 │ append    │
+│ 2026-11-02 23:17:45.845 │ 4128508298934004710 │                NULL │ append    │
+│ 2026-11-02 23:17:46.697 │ 8500452506445812961 │ 4128508298934004710 │ append    │
+│ 2026-11-02 23:17:46.855 │ 7288748314870090610 │ 8500452506445812961 │ append    │
 └─────────────────────────┴─────────────────────┴─────────────────────┴───────────┘
 ```
 
@@ -894,16 +945,16 @@ ls -1 warehouse/olist/orders/metadata/
 ```
 
 ```
-00000-42bfe785-e881-4469-86a4-009d1d4d1a2a.metadata.json
-00001-6561e41b-5c97-4a90-a77b-498bd0a24181.metadata.json
-00002-2d48e355-1bc1-4363-bd9e-1cdd69bd26f1.metadata.json
-00003-cae21a96-08d3-4352-b83f-c350dbb0a2db.metadata.json
-6b29f426-926e-4f0f-8509-46702e461475-m0.avro
-8b1b2a09-f490-4836-814f-66517991fd1c-m0.avro
-e8791198-c25a-4af1-9493-c6f08789f7bd-m0.avro
-snap-2131756834734027053-0-e8791198-c25a-4af1-9493-c6f08789f7bd.avro
-snap-7296911361541680023-0-6b29f426-926e-4f0f-8509-46702e461475.avro
-snap-7865760153420897185-0-8b1b2a09-f490-4836-814f-66517991fd1c.avro
+00000-7e1aa439-5167-4bea-9929-c8e0212aa92d.metadata.json
+00001-8a94d89d-5826-49d0-b9ca-cca642fe040e.metadata.json
+00002-b6dc6553-d041-4f16-bbe3-fa17ae2e270b.metadata.json
+00003-420cc08e-0cc8-4bfc-a417-d0d527c3658b.metadata.json
+469250f4-dc1f-4b76-9910-c946d66fbd78-m0.avro
+61a54424-75a9-46fe-804a-463bea5ce15d-m0.avro
+e238b200-5b07-474b-9f6a-1507d008bf35-m0.avro
+snap-4128508298934004710-0-469250f4-dc1f-4b76-9910-c946d66fbd78.avro
+snap-7288748314870090610-0-e238b200-5b07-474b-9f6a-1507d008bf35.avro
+snap-8500452506445812961-0-61a54424-75a9-46fe-804a-463bea5ce15d.avro
 ```
 
 Cada commit deixou um `metadata.json` novo (`00002-`, `00003-`) — **os anteriores não foram alterados**. Nada no Iceberg é editado no lugar: cada versão é um conjunto novo de arquivos de metadados, e os de versões anteriores continuam lá.
@@ -912,7 +963,7 @@ Cada commit deixou um `metadata.json` novo (`00002-`, `00003-`) — **os anterio
 
 ```sh
 # 5.b.1
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 LISTA=$(jq -r '.snapshots[-1]."manifest-list"' "${M#file://}")
 duckdb -c "
 SELECT manifest_path, added_snapshot_id, added_rows_count
@@ -925,9 +976,9 @@ FROM read_avro('${LISTA#file://}')"
 │                                               manifest_path                                               │  added_snapshot_id  │ added_rows_count │
 │                                                  varchar                                                  │        int64        │      int64       │
 ├───────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────┼──────────────────┤
-│ file:///home/barbosa/project/warehouse/olist/orders/metadata/8b1b2a09-f490-4836-814f-66517991fd1c-m0.avro │ 7865760153420897185 │             2682 │
-│ file:///home/barbosa/project/warehouse/olist/orders/metadata/6b29f426-926e-4f0f-8509-46702e461475-m0.avro │ 7296911361541680023 │             1780 │
-│ file:///home/barbosa/project/warehouse/olist/orders/metadata/e8791198-c25a-4af1-9493-c6f08789f7bd-m0.avro │ 2131756834734027053 │              800 │
+│ file:///home/barbosa/project/warehouse/olist/orders/metadata/e238b200-5b07-474b-9f6a-1507d008bf35-m0.avro │ 7288748314870090610 │             2682 │
+│ file:///home/barbosa/project/warehouse/olist/orders/metadata/61a54424-75a9-46fe-804a-463bea5ce15d-m0.avro │ 8500452506445812961 │             1780 │
+│ file:///home/barbosa/project/warehouse/olist/orders/metadata/469250f4-dc1f-4b76-9910-c946d66fbd78-m0.avro │ 4128508298934004710 │              800 │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────┴──────────────────┘
 ```
 
@@ -939,17 +990,53 @@ O bloco acima também fez, à mão, o caminho de um leitor: perguntou ao catálo
 
 ```sh
 # 5.c.1
-sqlite3 -line warehouse/catalogo.db \
+sqlite3 -line catalogo.db \
   "SELECT metadata_location, previous_metadata_location FROM iceberg_tables WHERE table_name = 'orders'"
 
 ```
 
 ```
-         metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00003-cae21a96-08d3-4352-b83f-c350dbb0a2db.metadata.json
-previous_metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00002-2d48e355-1bc1-4363-bd9e-1cdd69bd26f1.metadata.json
+         metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00003-420cc08e-0cc8-4bfc-a417-d0d527c3658b.metadata.json
+previous_metadata_location = file:///home/barbosa/project/warehouse/olist/orders/metadata/00002-b6dc6553-d041-4f16-bbe3-fa17ae2e270b.metadata.json
 ```
 
-O commit termina com um único `UPDATE` nessa linha, trocando o ponteiro do `metadata.json` anterior para o novo — e só se o ponteiro ainda for o que o escritor leu no início. É essa troca, atômica, que faz o commit ser atômico: **antes dela, nenhum leitor enxerga os arquivos novos; depois dela, todos enxergam todos**.
+Três commits, três trocas: o ponteiro andou de `00000` para `00001`, `00002` e `00003`, e `previous_metadata_location` guarda o penúltimo. Cada commit termina com um único `UPDATE` nessa linha — e esse `UPDATE` tem uma condição. Faça você o papel de um escritor atrasado: alguém que leu a tabela quando o ponteiro era o `00002` e só agora tenta publicar a sua versão:
+
+```sh
+# 5.c.2
+LIDO=$(sqlite3 catalogo.db "SELECT previous_metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+sqlite3 -line catalogo.db "
+UPDATE iceberg_tables
+   SET metadata_location = 'versao-do-escritor-atrasado.metadata.json'
+ WHERE table_namespace = 'olist' AND table_name = 'orders'
+   AND metadata_location = '$LIDO';
+SELECT changes() AS linhas_alteradas"
+
+```
+
+```
+linhas_alteradas = 0
+```
+
+Nenhuma linha alterada: o `WHERE` exige que o ponteiro ainda seja o `00002`, e ele já é o `00003`. Essa é a terceira coisa que se pede a um catálogo, e a mais importante: **trocar o ponteiro só se ele ainda for o que o escritor leu**, numa operação atômica. A especificação do Iceberg chama isso de *check-and-put* ([Metastore Tables](https://iceberg.apache.org/spec/#metastore-tables)); aqui, é o `WHERE` de um `UPDATE` dentro de uma transação do SQLite.
+
+O commit inteiro, do ponto de vista do catálogo:
+
+```mermaid
+sequenceDiagram
+    participant E as Escritor (PyIceberg)
+    participant C as Catálogo (catalogo.db)
+    participant A as Armazenamento (warehouse/)
+    E->>C: onde está olist.orders?
+    C-->>E: 00002-….metadata.json
+    E->>A: grava data file, manifest, manifest list e 00003-….metadata.json
+    Note over E,A: nenhum ponteiro leva a esses arquivos: os leitores não os veem
+    E->>C: troque 00002 → 00003, se ainda for 00002
+    C-->>E: 1 linha alterada: commit feito
+    Note over C: daqui em diante, quem pergunta recebe o 00003
+```
+
+É essa troca condicional que faz o commit ser atômico: **antes dela, nenhum leitor enxerga os arquivos novos; depois dela, todos enxergam todos**.
 
 É o problema 2.e resolvido. Uma carga em andamento grava data files e manifests que nenhum `metadata.json` aponta ainda; um leitor que chega nesse meio-tempo lê o snapshot anterior, inteiro e coerente.
 
@@ -963,7 +1050,9 @@ python3 - <<'EOF'
 from lab import *
 
 sessao_a = tabela()
-sessao_b = tabela()          # as duas leram o mesmo metadata.json
+sessao_b = tabela()          # as duas leram o mesmo metadata.json, o 00003
+espia(sessao_a, so="UPDATE")
+espia(sessao_b, so="UPDATE")
 
 sessao_a.append(pedidos_novos("2017-04"))
 sessao_b.append(pedidos_novos("2017-04"))
@@ -974,20 +1063,34 @@ EOF
 ```
 
 ```
-Commit failed due to a concurrent update, retrying (1/4) in 108 ms
+UPDATE iceberg_tables
+   SET metadata_location = '00004-8e33b507-a919-4228-99c3-f8f3302c55e9.metadata.json',
+       previous_metadata_location = '00003-420cc08e-0cc8-4bfc-a417-d0d527c3658b.metadata.json'
+ WHERE catalog_name = 'olist' AND table_namespace = 'olist' AND table_name = 'orders'
+   AND metadata_location = '00003-420cc08e-0cc8-4bfc-a417-d0d527c3658b.metadata.json'
+-- 1 linha(s) alterada(s)
+
+Commit failed due to a concurrent update, retrying (1/4) in 105 ms
+UPDATE iceberg_tables
+   SET metadata_location = '00005-b02fb721-5244-4edb-87ee-5bf5424dedbf.metadata.json',
+       previous_metadata_location = '00004-8e33b507-a919-4228-99c3-f8f3302c55e9.metadata.json'
+ WHERE catalog_name = 'olist' AND table_namespace = 'olist' AND table_name = 'orders'
+   AND metadata_location = '00004-8e33b507-a919-4228-99c3-f8f3302c55e9.metadata.json'
+-- 1 linha(s) alterada(s)
+
 ┌─────────────────────┬─────────────────────┬───────────┐
 │     snapshot_id     │      parent_id      │ operation │
 │        int64        │        int64        │  varchar  │
 ├─────────────────────┼─────────────────────┼───────────┤
-│ 2131756834734027053 │                NULL │ append    │
-│ 7296911361541680023 │ 2131756834734027053 │ append    │
-│ 7865760153420897185 │ 7296911361541680023 │ append    │
-│  281485491193889325 │ 7865760153420897185 │ append    │
-│ 3246762794402949386 │  281485491193889325 │ append    │
+│ 4128508298934004710 │                NULL │ append    │
+│ 8500452506445812961 │ 4128508298934004710 │ append    │
+│ 7288748314870090610 │ 8500452506445812961 │ append    │
+│ 6694773855462285375 │ 7288748314870090610 │ append    │
+│ 5382856135990795256 │ 6694773855462285375 │ append    │
 └─────────────────────┴─────────────────────┴───────────┘
 ```
 
-A sessão B tentou trocar o ponteiro, descobriu que ele já não era o que ela tinha lido ("Commit failed due to a concurrent update") e **tentou de novo**: recarregou os metadados, refez o commit em cima do snapshot da sessão A e entrou. É a **concorrência otimista**: ninguém trava a tabela; quem chega atrasado verifica se o seu commit ainda faz sentido e o reaplica.
+Os dois `UPDATE` contam a história. A sessão A trocou `00003` → `00004`. A sessão B também tinha lido o `00003`, mas, antes de pedir a troca, o PyIceberg relê a tabela no catálogo e confere se ela ainda está como ele a leu. Não estava ("Commit failed due to a concurrent update"), e ele **tentou de novo**: recarregou os metadados, refez o commit em cima do snapshot da sessão A e pediu a troca `00004` → `00005`, agora condicionada ao `00004`. É a **concorrência otimista**: ninguém trava a tabela; quem chega atrasado verifica se o seu commit ainda faz sentido e o reaplica. (Se as duas sessões chegassem à troca no mesmo instante, as duas conferências passariam, e quem barraria a segunda seria o `WHERE` da 5.c.2.)
 
 Para dois `append`, fazer sentido é fácil: acrescentar arquivos nunca conflita. O resultado é que abril entrou **duas vezes** — o Iceberg garante que cada commit é atômico, não que o pipeline seja correto. Esse abril duplicado será desfeito na seção 6.
 
@@ -1025,11 +1128,13 @@ CommitFailedException -> Requirement failed: current schema id has changed: expe
 
 A sessão B partiu do schema 0 e encontrou o schema 1. O commit é recusado, e cabe à aplicação recarregar a tabela e decidir o que fazer.
 
+*Requirement failed* é a mesma conferência da 5.d.1: junto com cada commit, o PyIceberg leva as condições de que ele depende — numa mudança de schema, "o schema atual ainda é o 0" — e as confere contra a tabela atual antes de pedir a troca do ponteiro. A especificação diz o que cada operação precisa reconferir para ser refeita em cima de uma versão mais nova ([Commit Conflict Resolution and Retry](https://iceberg.apache.org/spec/#commit-conflict-resolution-and-retry)): um `append` sempre pode ser refeito; uma mudança de schema, só se o schema não tiver mudado.
+
 ### 5.e. O que você deve conseguir explicar
 
 - Por que cada commit cria um `metadata.json` novo em vez de alterar o anterior.
 - Como uma manifest list reaproveita manifests de snapshots anteriores.
-- Por que a troca do ponteiro no catálogo torna o commit atômico, e como isso resolve o problema 2.e.
+- O que o escritor pede ao catálogo no fim do commit, e por que a condição "se o ponteiro ainda for o que eu li" torna o commit atômico e resolve o problema 2.e.
 - O que é concorrência otimista, por que dois `append` simultâneos não conflitam e por que duas mudanças de schema conflitam.
 
 ---
@@ -1054,11 +1159,11 @@ EOF
 ```
 
 ```
-2131756834734027053 append    800 pedidos
-7296911361541680023 append   2580 pedidos
-7865760153420897185 append   5262 pedidos
-281485491193889325 append   7666 pedidos
-3246762794402949386 append  10070 pedidos
+4128508298934004710 append    800 pedidos
+8500452506445812961 append   2580 pedidos
+7288748314870090610 append   5262 pedidos
+6694773855462285375 append   7666 pedidos
+5382856135990795256 append  10070 pedidos
 ```
 
 Cinco versões: janeiro, fevereiro, março, abril — e abril de novo. É o problema 2.f resolvido: a tabela lembra cada estado pelo qual passou.
@@ -1067,7 +1172,7 @@ O DuckDB também viaja no tempo, a partir do mesmo `metadata.json`:
 
 ```sh
 # 6.a.2
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 duckdb -c "SELECT sequence_number, snapshot_id, timestamp_ms FROM iceberg_snapshots('$M') ORDER BY 1"
 PRIMEIRO=$(duckdb -noheader -list -c "SELECT snapshot_id FROM iceberg_snapshots('$M') ORDER BY sequence_number LIMIT 1")
 duckdb -c "SELECT count(*) AS pedidos_no_primeiro_snapshot FROM iceberg_scan('$M', snapshot_from_id = $PRIMEIRO)"
@@ -1079,11 +1184,11 @@ duckdb -c "SELECT count(*) AS pedidos_no_primeiro_snapshot FROM iceberg_scan('$M
 │ sequence_number │     snapshot_id     │      timestamp_ms       │
 │     uint64      │       uint64        │        timestamp        │
 ├─────────────────┼─────────────────────┼─────────────────────────┤
-│               1 │ 2131756834734027053 │ 2026-10-12 22:33:16.653 │
-│               2 │ 7296911361541680023 │ 2026-10-12 22:33:17.96  │
-│               3 │ 7865760153420897185 │ 2026-10-12 22:33:18.121 │
-│               4 │  281485491193889325 │ 2026-10-12 22:33:18.86  │
-│               5 │ 3246762794402949386 │ 2026-10-12 22:33:19.14  │
+│               1 │ 4128508298934004710 │ 2026-11-02 23:17:45.845 │
+│               2 │ 8500452506445812961 │ 2026-11-02 23:17:46.697 │
+│               3 │ 7288748314870090610 │ 2026-11-02 23:17:46.855 │
+│               4 │ 6694773855462285375 │ 2026-11-02 23:17:47.345 │
+│               5 │ 5382856135990795256 │ 2026-11-02 23:17:47.619 │
 └─────────────────┴─────────────────────┴─────────────────────────┘
 ┌──────────────────────────────┐
 │ pedidos_no_primeiro_snapshot │
@@ -1118,8 +1223,8 @@ EOF
 │        name        │  type   │     snapshot_id     │
 │      varchar       │ varchar │        int64        │
 ├────────────────────┼─────────┼─────────────────────┤
-│ main               │ BRANCH  │ 3246762794402949386 │
-│ fechamento-2017-q1 │ TAG     │ 7865760153420897185 │
+│ main               │ BRANCH  │ 5382856135990795256 │
+│ fechamento-2017-q1 │ TAG     │ 7288748314870090610 │
 └────────────────────┴─────────┴─────────────────────┘
 
 pedidos no fechamento: 5262
@@ -1150,12 +1255,12 @@ pedidos agora: 7666
 │     made_current_at     │     snapshot_id     │      parent_id      │ is_current_ancestor │
 │      timestamp_ms       │        int64        │        int64        │       boolean       │
 ├─────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┤
-│ 2026-10-12 22:33:16.653 │ 2131756834734027053 │                NULL │ true                │
-│ 2026-10-12 22:33:17.96  │ 7296911361541680023 │ 2131756834734027053 │ true                │
-│ 2026-10-12 22:33:18.121 │ 7865760153420897185 │ 7296911361541680023 │ true                │
-│ 2026-10-12 22:33:18.86  │  281485491193889325 │ 7865760153420897185 │ true                │
-│ 2026-10-12 22:33:19.14  │ 3246762794402949386 │  281485491193889325 │ false               │
-│ 2026-10-12 22:33:21.008 │  281485491193889325 │ 7865760153420897185 │ true                │
+│ 2026-11-02 23:17:45.845 │ 4128508298934004710 │                NULL │ true                │
+│ 2026-11-02 23:17:46.697 │ 8500452506445812961 │ 4128508298934004710 │ true                │
+│ 2026-11-02 23:17:46.855 │ 7288748314870090610 │ 8500452506445812961 │ true                │
+│ 2026-11-02 23:17:47.345 │ 6694773855462285375 │ 7288748314870090610 │ true                │
+│ 2026-11-02 23:17:47.619 │ 5382856135990795256 │ 6694773855462285375 │ false               │
+│ 2026-11-02 23:17:49.129 │ 6694773855462285375 │ 7288748314870090610 │ true                │
 └─────────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
 ```
 
@@ -1165,7 +1270,7 @@ Todo leitor vê a mudança, porque ela também é um commit:
 
 ```sh
 # 6.c.2
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 duckdb -c "
 SELECT strftime(order_purchase_timestamp, '%Y-%m') AS mes, count(*) AS pedidos
 FROM iceberg_scan('$M') GROUP BY ALL ORDER BY 1"
@@ -1280,13 +1385,13 @@ jq '[.schemas[] | {"schema-id", colunas: [.fields[] | select(.id == 3 or .id == 
 ```
 warehouse/olist/products
 ├── data
-│   └── 00000-0-443a3991-0732-494b-a291-4d42a15dbded.parquet
+│   └── 00000-0-d4a3142e-4b29-419f-a68a-3b4baffbddca.parquet
 └── metadata
-    ├── 00000-3494d99d-40d3-4d71-b4b1-a146bc15726d.metadata.json
-    ├── 00001-5f7a5658-aae5-4bb7-af5e-203e484ef963.metadata.json
-    ├── 00002-8131ca11-6acf-4173-bdec-9b0b9979361f.metadata.json
-    ├── 443a3991-0732-494b-a291-4d42a15dbded-m0.avro
-    └── snap-75817450847468806-0-443a3991-0732-494b-a291-4d42a15dbded.avro
+    ├── 00000-54d32faa-8f06-4de4-9275-a651ab52c3e3.metadata.json
+    ├── 00001-75f9ca58-02dc-4dec-bf9e-f05a0a9ace62.metadata.json
+    ├── 00002-6221b5f8-f4e9-4688-add6-045065d6e0dd.metadata.json
+    ├── d4a3142e-4b29-419f-a68a-3b4baffbddca-m0.avro
+    └── snap-8361544781482332049-0-d4a3142e-4b29-419f-a68a-3b4baffbddca.avro
 
 3 directories, 6 files
 [
@@ -1356,16 +1461,16 @@ done
 │        arquivo        │            name            │ field_id │
 │        varchar        │          varchar           │  int64   │
 ├───────────────────────┼────────────────────────────┼──────────┤
-│ 00000-0-443a3991-073… │ product_name_lenght        │        3 │
-│ 00000-0-443a3991-073… │ product_description_lenght │        4 │
+│ 00000-0-d4a3142e-4b2… │ product_name_lenght        │        3 │
+│ 00000-0-d4a3142e-4b2… │ product_description_lenght │        4 │
 └───────────────────────┴────────────────────────────┴──────────┘
 ┌───────────────────────┬───────────────────────────────┬──────────┐
 │        arquivo        │             name              │ field_id │
 │        varchar        │            varchar            │  int64   │
 ├───────────────────────┼───────────────────────────────┼──────────┤
-│ 00000-0-839c10ac-1fd… │ product_name_length           │        3 │
-│ 00000-0-839c10ac-1fd… │ product_description_length    │        4 │
-│ 00000-0-839c10ac-1fd… │ product_category_name_english │       10 │
+│ 00000-0-eb4ca2fb-f93… │ product_name_length           │        3 │
+│ 00000-0-eb4ca2fb-f93… │ product_description_length    │        4 │
+│ 00000-0-eb4ca2fb-f93… │ product_category_name_english │       10 │
 └───────────────────────┴───────────────────────────────┴──────────┘
 ```
 
@@ -1373,7 +1478,7 @@ O arquivo antigo ainda diz `product_name_lenght`; o novo diz `product_name_lengt
 
 ```sh
 # 7.d.2
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'products'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'products'")
 duckdb -c "
 SELECT count(*) AS produtos,
        count(product_name_length) AS com_tamanho,
@@ -1398,7 +1503,7 @@ Na seção 2.c, só 16 mil produtos tinham tamanho de nome; agora são 32.341 �
 
 ```sh
 # 7.e.1
-sqlite3 -header -column warehouse/catalogo.db "SELECT table_namespace, table_name FROM iceberg_tables"
+sqlite3 -header -column catalogo.db "SELECT table_namespace, table_name FROM iceberg_tables"
 
 ```
 
@@ -1406,7 +1511,7 @@ sqlite3 -header -column warehouse/catalogo.db "SELECT table_namespace, table_nam
 table_namespace  table_name
 ---------------  ----------
 olist            orders    
-olist            products
+olist            products  
 ```
 
 ### 7.f. O que você deve conseguir explicar
@@ -1544,7 +1649,7 @@ O DuckDB faz o mesmo e informa no plano de execução:
 
 ```sh
 # 8.c.2
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 duckdb -c "
 EXPLAIN ANALYZE
 SELECT count(*) FROM iceberg_scan('$M')
@@ -1664,17 +1769,17 @@ EOF
 │ partition_spec_id │ added_data_files_count │  added_snapshot_id  │
 │       int32       │         int32          │        int64        │
 ├───────────────────┼────────────────────────┼─────────────────────┤
-│                 2 │                     30 │ 3596012584304269198 │
-│                 1 │                      1 │ 7813222426747023544 │
-│                 1 │                      1 │ 6560692181433966747 │
-│                 1 │                      1 │ 2123462114996939494 │
-│                 1 │                      1 │ 4538841852579233587 │
-│                 1 │                      1 │ 2510807858552690513 │
-│                 1 │                      1 │  211250236390349386 │
-│                 1 │                      1 │ 1092451413782091019 │
-│                 1 │                      1 │  335137909578907028 │
-│                 1 │                      1 │ 6014298432010955587 │
-│                 1 │                      1 │ 4174089193084731874 │
+│                 2 │                     30 │ 2323015985892185807 │
+│                 1 │                      1 │  752789475873172738 │
+│                 1 │                      1 │ 3560805756405290824 │
+│                 1 │                      1 │ 6963851183743039681 │
+│                 1 │                      1 │ 2120012862056913290 │
+│                 1 │                      1 │ 3704661124166304586 │
+│                 1 │                      1 │ 2349621294517916760 │
+│                 1 │                      1 │ 2947423374913867083 │
+│                 1 │                      1 │ 8595122780075696943 │
+│                 1 │                      1 │ 4944700926039655260 │
+│                 1 │                      1 │ 4711008230568556826 │
 └───────────────────┴────────────────────────┴─────────────────────┘
   11 rows                                                3 columns
 ```
@@ -1708,7 +1813,7 @@ A semana da Black Friday lê sete arquivos diários. O segundo semestre lê os q
 
 ```sh
 # 9.c.2
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 duckdb -c "
 SELECT order_purchase_timestamp::DATE AS dia, count(*) AS pedidos
 FROM iceberg_scan('$M')
@@ -1940,7 +2045,7 @@ EOF
 
 ```
 data/        770 arquivos     8398.3 KB
-metadata/     58 arquivos     1072.4 KB
+metadata/     58 arquivos     1074.3 KB
 17 snapshots | 702 data files na versão atual
 ```
 
@@ -1973,7 +2078,7 @@ EOF
 ```
 204 pedidos em 21 data files
 data/        791 arquivos     8483.1 KB
-metadata/    121 arquivos     1729.7 KB
+metadata/    121 arquivos     1731.7 KB
 ```
 
 Duas centenas de pedidos viraram duas dezenas de arquivos pequenos, e cada commit deixou um `metadata.json`, uma manifest list e um manifest. Os metadados cresceram mais que os dados. É o problema dos **small files**: cada arquivo tem um custo fixo — abrir, ler o rodapé do Parquet, uma requisição no S3 —, e milhares de arquivos pequenos deixam a leitura lenta muito antes de o volume de dados pesar.
@@ -1999,7 +2104,7 @@ EOF
 ```
 1 data file para o dia
 data/        792 arquivos     8496.3 KB
-metadata/    126 arquivos     1784.1 KB
+metadata/    126 arquivos     1786.2 KB
 ```
 
 A versão atual lê um arquivo para o dia, em vez de duas dezenas. O disco, porém, ganhou um arquivo: os pequenos continuam lá, porque os snapshots anteriores ainda os usam.
@@ -2030,7 +2135,7 @@ EOF
 snapshots antes: 40
 snapshots depois: 1
 data/        792 arquivos     8496.3 KB
-metadata/    127 arquivos     1792.5 KB
+metadata/    127 arquivos     1794.6 KB
 ```
 
 O histórico encolheu para um snapshot. E o disco... não mudou. O `expire_snapshots` do PyIceberg remove os snapshots dos metadados, mas **não apaga arquivos**. O que sobrou no disco agora são **arquivos órfãos**: nenhum snapshot vivo aponta para eles.
@@ -2095,7 +2200,7 @@ EOF
 ```
 168 arquivos removidos
 data/        703 arquivos     5569.3 KB
-metadata/     48 arquivos      985.1 KB
+metadata/     48 arquivos      985.8 KB
 45302 pedidos na tabela
 ```
 
@@ -2152,7 +2257,7 @@ import pyarrow.compute as pc
 pedidos = tabela().scan().to_arrow()
 print("PyIceberg:", pedidos.num_rows, "pedidos,", pc.sum(pc.equal(pedidos["order_status"], "delivered")).as_py(), "entregues")
 EOF
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 duckdb -noheader -list -c "
 SELECT 'DuckDB:    ' || count(*) || ' pedidos, ' || count(*) FILTER (WHERE order_status = 'delivered') || ' entregues'
 FROM iceberg_scan('$M')"
@@ -2168,7 +2273,73 @@ O PyIceberg chegou à tabela pelo catálogo; o DuckDB, direto pelo `metadata.jso
 
 ### 12.b. O papel do catálogo
 
-O DuckDB leu sem catálogo — mas precisou receber o caminho do `metadata.json`. Num ambiente com vários escritores, é o catálogo que diz qual é a versão atual e que faz a troca atômica do ponteiro. Há vários tipos:
+O DuckDB leu sem catálogo — mas precisou receber o caminho do `metadata.json`. Quem diz qual é esse caminho, e quem decide quando ele muda, é o catálogo. Dois experimentos mostram o que isso significa.
+
+**A tabela mora nos arquivos.** Crie um segundo catálogo, num arquivo novo, e registre nele a tabela `olist.orders`, informando só o caminho do `metadata.json` atual:
+
+```sh
+# 12.b.1
+python3 - <<'EOF'
+from lab import *
+from pyiceberg.catalog.sql import SqlCatalog
+
+outro = SqlCatalog("outro", uri="sqlite:////home/barbosa/project/outro.db",
+                   warehouse="file:///home/barbosa/project/warehouse")
+outro.create_namespace("olist")
+outro.register_table("olist.orders", tabela().metadata_location)
+
+for nome, t in [("catalogo.db", tabela()), ("outro.db", outro.load_table("olist.orders"))]:
+    print(f"{nome:12} {t.metadata_location.split('/')[-1]}  {len(list(t.scan().plan_files()))} data files  {t.scan().to_arrow().num_rows} pedidos")
+EOF
+
+```
+
+```
+catalogo.db  00040-be7fcd92-59bc-411b-8783-4f0bee8c9e61.metadata.json  703 data files  45302 pedidos
+outro.db     00040-be7fcd92-59bc-411b-8783-4f0bee8c9e61.metadata.json  703 data files  45302 pedidos
+```
+
+Nenhum arquivo foi copiado: o `outro.db` ganhou uma linha com o mesmo ponteiro e, com ela, a tabela inteira — schema, partições, snapshots, data files. Trocar de catálogo é barato, desde que os arquivos fiquem onde estão.
+
+**Cada tabela tem um único catálogo dono.** Agora faça um commit pelo catálogo do laboratório — uma tag marcando o fim da Parte III — e pergunte de novo aos dois:
+
+```sh
+# 12.b.2
+python3 - <<'EOF'
+from lab import *
+from pyiceberg.catalog.sql import SqlCatalog
+
+t = tabela()
+t.manage_snapshots().create_tag(t.current_snapshot().snapshot_id, "fim-da-parte-iii").commit()
+
+outro = SqlCatalog("outro", uri="sqlite:////home/barbosa/project/outro.db",
+                   warehouse="file:///home/barbosa/project/warehouse")
+for nome, t in [("catalogo.db", tabela()), ("outro.db", outro.load_table("olist.orders"))]:
+    tags = [nome_ref for nome_ref, ref in t.refs().items() if ref.snapshot_ref_type == "tag"]
+    print(f"{nome:12} {t.metadata_location.split('/')[-1]}  tags: {tags}")
+EOF
+rm outro.db          # apaga o outro catálogo; a tabela não é tocada
+
+```
+
+```
+catalogo.db  00041-5d3d38e7-f6eb-4b82-9dd7-27d83578888f.metadata.json  tags: ['fim-da-parte-iii']
+outro.db     00040-be7fcd92-59bc-411b-8783-4f0bee8c9e61.metadata.json  tags: []
+```
+
+O commit trocou o ponteiro no `catalogo.db`; o `outro.db` não ficou sabendo e continuou apontando para a versão anterior. Quem perguntasse a ele leria a tabela sem a tag — e, se fizesse um commit por ele, criaria uma segunda "versão atual", que o catálogo do laboratório nunca veria. Por isso uma tabela tem **um** catálogo: ele é a fonte da verdade sobre qual versão é a atual, e a troca condicional só protege quem passa por ele. O `rm outro.db`, no fim do bloco, apagou o outro catálogo, e a tabela continua inteira: um catálogo só aponta.
+
+**O que se pede a um catálogo.** Juntando as seções 3, 5 e esta:
+
+| O catálogo… | Onde você viu |
+|---|---|
+| guarda os nomes: cria, lista, registra e apaga namespaces e tabelas | 3.a, 7.e, 8.a, 12.b |
+| diz qual é o `metadata.json` atual de uma tabela | 3.c |
+| troca esse ponteiro só se ele ainda for o que o escritor leu, numa operação atômica | 5.c, 5.d |
+
+E o que ele **não** faz: não guarda dados, não é a fonte do schema nem da lista de arquivos (tudo isso está nos metadados), não executa consultas e não trava a tabela.
+
+Há vários tipos de catálogo. Todos cumprem esse contrato; o que muda é onde o ponteiro fica:
 
 | Catálogo | Onde o ponteiro fica | Exemplo de uso |
 |---|---|---|
@@ -2178,7 +2349,9 @@ O DuckDB leu sem catálogo — mas precisou receber o caminho do `metadata.json`
 | **AWS Glue Data Catalog** | numa tabela do Glue | Athena, EMR, Glue (Parte IV) |
 | **Amazon S3 Tables** | gerenciado pelo próprio S3 | buckets de tabela na AWS |
 
-Mudar de catálogo não muda nada nos arquivos. É o que você vai fazer na Parte IV: a mesma tabela, com o catálogo trocado pelo Glue e o disco trocado pelo S3.
+E cada um faz a troca condicional com o que tem. No SQL, é o `WHERE` da 5.c.2, e por isso o banco precisa de transações atômicas ([JDBC Catalog](https://iceberg.apache.org/docs/latest/jdbc/)). No Glue, é um número de versão da tabela, que você vai ver na seção 13 ([Optimistic Locking](https://iceberg.apache.org/docs/latest/aws/#optimistic-locking)). No REST, o escritor manda junto com o commit as condições de que ele depende — as *requirements* da 5.d.2 — e quem as confere é o servidor ([REST Catalog API](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml)).
+
+Na Parte IV, você troca as duas peças da configuração: o catálogo, pelo Glue, e o armazenamento, pelo S3. A troca do catálogo, você acabou de ver, é barata; a do armazenamento não é — e a seção 13 começa por aí.
 
 ### 12.c. A visão geral
 
@@ -2200,7 +2373,7 @@ flowchart LR
         DUCK["DuckDB"]
         OUT["Athena · Spark · Trino · Snowflake"]
     end
-    PY & ATH -->|"commit: troca atômica do ponteiro"| CAT
+    PY & ATH -->|"commit: troca condicional do ponteiro"| CAT
     CAT --> MJ --> ML --> MF --> DF & DEL
     DUCK & OUT -->|"leitura: segue os ponteiros"| CAT
 ```
@@ -2216,6 +2389,8 @@ flowchart LR
 
 - Por que dois motores que não se conhecem conseguem ler e escrever a mesma tabela.
 - Para que serve o catálogo, se um leitor consegue ler a tabela só com o `metadata.json`.
+- As três coisas que se pedem a um catálogo, e o que ele não faz.
+- Por que trocar de catálogo é barato, e por que uma tabela tem um único catálogo dono.
 - Como cada problema da seção 2 foi resolvido.
 
 **→ Parte IV.** A tabela está pronta e entendida. Falta levá-la para onde os data lakes de verdade moram: um object storage, com um catálogo gerenciado e um motor de consulta serverless.
@@ -2243,7 +2418,7 @@ A primeira ideia para levar a tabela para o S3 é copiar a pasta. Veja o que os 
 
 ```sh
 # 13.a.1
-M=$(sqlite3 warehouse/catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
+M=$(sqlite3 catalogo.db "SELECT metadata_location FROM iceberg_tables WHERE table_name = 'orders'")
 jq -r '.location, .snapshots[-1]."manifest-list"' "${M#file://}"
 LISTA=$(jq -r '.snapshots[-1]."manifest-list"' "${M#file://}")
 duckdb -noheader -list -c "SELECT manifest_path FROM read_avro('${LISTA#file://}') LIMIT 1"
@@ -2252,13 +2427,13 @@ duckdb -noheader -list -c "SELECT manifest_path FROM read_avro('${LISTA#file://}
 
 ```
 file:///home/barbosa/project/warehouse/olist/orders
-file:///home/barbosa/project/warehouse/olist/orders/metadata/snap-3911355437548292823-0-858cb1b2-6985-45bc-a007-bb828d8ca305.avro
-file:///home/barbosa/project/warehouse/olist/orders/metadata/858cb1b2-6985-45bc-a007-bb828d8ca305-m0.avro
+file:///home/barbosa/project/warehouse/olist/orders/metadata/snap-5544539905707822242-0-4801eebf-52ce-4519-944b-6f72749dc136.avro
+file:///home/barbosa/project/warehouse/olist/orders/metadata/4801eebf-52ce-4519-944b-6f72749dc136-m0.avro
 ```
 
 Todos os ponteiros da árvore — do `metadata.json` à manifest list, da manifest list aos manifests, dos manifests aos data files — são **caminhos absolutos**. Uma cópia da pasta no S3 teria metadados apontando para `file:///home/barbosa/...`, um disco que não existe para quem lê do S3.
 
-Mover uma tabela Iceberg de lugar exige reescrever os caminhos em todos os arquivos de metadados (o Spark tem um procedimento para isso, `rewrite_table_path`). Aqui, o caminho mais simples é o que uma migração de verdade costuma fazer: criar a tabela no destino e carregar o estado atual dos dados.
+Mover uma tabela Iceberg de lugar exige reescrever os caminhos em todos os arquivos de metadados (o Spark tem um procedimento para isso, `rewrite_table_path`). Aqui, o caminho mais simples é criar a tabela no destino e carregar nela o estado atual dos dados: uma tabela nova, com os mesmos pedidos, mas sem o histórico da tabela local.
 
 ### 13.b. A conta e o bucket
 
@@ -2273,8 +2448,8 @@ aws glue get-databases --query 'DatabaseList[].Name'
 ```
 
 ```
-arn:aws:sts::226754155971:assumed-role/voclabs/user5041515=
-make_bucket: iceberg-lab-226754155971
+arn:aws:sts::058264098838:assumed-role/voclabs/user5060411=
+make_bucket: iceberg-lab-058264098838
 [
     "olist"
 ]
@@ -2309,33 +2484,37 @@ EOF
 
 ```
 45101 pedidos
-s3://iceberg-lab-226754155971/warehouse/orders/metadata/00002-34a07dd9-b279-48c3-98c1-6eb50793f736.metadata.json
+s3://iceberg-lab-058264098838/warehouse/orders/metadata/00002-9cbb8185-1fe1-4b05-a206-3d5618507913.metadata.json
 ```
 
 O código é o da seção 8, com outro catálogo. O PyIceberg grava os data files e os metadados no S3 e faz o commit no Glue.
 
-### 13.d. O catálogo é outro; a tabela é a mesma
+### 13.d. O que o Glue guarda
 
 ```sh
 # 13.d.1
 aws glue get-table --database-name olist --name orders \
-  --query 'Table.{tipo: TableType, local: StorageDescriptor.Location, parametros: Parameters}'
+  --query 'Table.{tipo: TableType, versao: VersionId, colunas: length(StorageDescriptor.Columns), parametros: Parameters}'
 
 ```
 
 ```
 {
     "tipo": "EXTERNAL_TABLE",
-    "local": "s3://iceberg-lab-226754155971/warehouse/orders",
+    "versao": "2",
+    "colunas": 8,
     "parametros": {
-        "metadata_location": "s3://iceberg-lab-226754155971/warehouse/orders/metadata/00002-34a07dd9-b279-48c3-98c1-6eb50793f736.metadata.json",
-        "previous_metadata_location": "s3://iceberg-lab-226754155971/warehouse/orders/metadata/00001-cdbb86b1-b4c7-4455-85f5-4cf98d555db8.metadata.json",
+        "metadata_location": "s3://iceberg-lab-058264098838/warehouse/orders/metadata/00002-9cbb8185-1fe1-4b05-a206-3d5618507913.metadata.json",
+        "previous_metadata_location": "s3://iceberg-lab-058264098838/warehouse/orders/metadata/00001-f86729a1-29fb-4029-95df-b4b53592dcab.metadata.json",
         "table_type": "ICEBERG"
     }
 }
 ```
 
-Compare com a linha do SQLite da seção 3.c: `metadata_location` e `previous_metadata_location`, os mesmos dois ponteiros. Para o Glue, uma tabela Iceberg é uma tabela externa com `table_type = ICEBERG` e o caminho do `metadata.json` atual.
+Compare com a linha do SQLite da seção 3.c: `metadata_location` e `previous_metadata_location`, os mesmos dois ponteiros. Para o Glue, uma tabela Iceberg é uma tabela externa com `table_type = ICEBERG` e o caminho do `metadata.json` atual. Dois campos são novos:
+
+- `versao` — o número que o Glue dá a cada alteração da tabela. É com ele que o Glue faz a troca condicional: o PyIceberg lê a versão junto com o ponteiro e, no commit, pede a troca **informando a versão que leu**; se outro escritor alterou a tabela antes, a versão já é outra e o Glue recusa. É o `WHERE` da 5.c.2 com outro mecanismo ([Optimistic Locking](https://iceberg.apache.org/docs/latest/aws/#optimistic-locking)).
+- `colunas` — o Glue também guarda as colunas da tabela. É uma cópia que o PyIceberg regrava a cada commit, para que o console e as ferramentas que só leem o Glue mostrem o schema; quem lê a tabela usa o schema do `metadata.json`.
 
 ```sh
 # 13.d.2
@@ -2346,20 +2525,21 @@ aws s3 ls --recursive "s3://${BUCKET}/warehouse/orders/" | wc -l
 ```
 
 ```
-56025 warehouse/orders/data/mes_compra=2017-01/00000-0-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet
-118215 warehouse/orders/data/mes_compra=2017-02/00000-1-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet
-184465 warehouse/orders/data/mes_compra=2017-03/00000-2-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet
-165670 warehouse/orders/data/mes_compra=2017-04/00000-3-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet
-1806 warehouse/orders/metadata/snap-1468591945686940642-0-baefce9e-9570-4ea5-bf49-e0dc040d3458.avro
+56025 warehouse/orders/data/mes_compra=2017-01/00000-0-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet
+118215 warehouse/orders/data/mes_compra=2017-02/00000-1-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet
+184465 warehouse/orders/data/mes_compra=2017-03/00000-2-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet
+165670 warehouse/orders/data/mes_compra=2017-04/00000-3-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet
+1805 warehouse/orders/metadata/snap-515611148557093685-0-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.avro
 17
 ```
 
-As mesmas pastas `data/mes_compra=…/` e `metadata/` do disco local. No console da AWS, a tabela aparece em **AWS Glue** > **Data Catalog** > **Tables**, com o formato Iceberg e o schema.
+As mesmas pastas `data/mes_compra=…/` e `metadata/` do disco local. No console da AWS, a tabela aparece em **AWS Glue** > **Data Catalog** > **Tables**, com o formato Iceberg e as colunas — a cópia de que se falou acima.
 
 ### 13.e. O que você deve conseguir explicar
 
 - Por que copiar a pasta de uma tabela Iceberg para outro lugar não funciona.
 - O que o Glue Data Catalog guarda sobre uma tabela Iceberg, e como isso se compara ao catálogo SQLite.
+- Como o Glue faz a troca condicional do ponteiro, e por que ele mostra as colunas da tabela.
 - Por que o mesmo código do PyIceberg grava no disco local e no S3.
 
 ---
@@ -2389,8 +2569,8 @@ canceled      264
 processing    240
 invoiced      175
 created       61
-snapshot_id          operation
-1468591945686940642  append
+snapshot_id         operation
+515611148557093685  append
 ```
 
 A tabela que o PyIceberg gravou, lida por um motor que não tem nada a ver com ele. As tabelas de metadados (`$snapshots`, `$files`, `$manifests`, `$history`) são o equivalente do `inspect` do PyIceberg.
@@ -2465,9 +2645,9 @@ EOF
 │ content │                                                                    file_path                                                                    │ record_count │
 │  int8   │                                                                     varchar                                                                     │    int64     │
 ├─────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────┤
-│       1 │ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-12/20261012_222905_00115_awgw5-cc723028-5cf5-4241-940d-51fd7ab7b481.parquet │         2153 │
-│       1 │ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-10/20261012_222905_00115_awgw5-76c861ca-04d1-4fca-a56a-febbbb7b3574.parquet │            2 │
-│       1 │ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-11/20261012_222905_00115_awgw5-451c456a-9084-4be8-a9b6-e005f1a5b65e.parquet │          301 │
+│       1 │ s3://iceberg-lab-058264098838/warehouse/orders/data/mes_compra=2017-10/20261102_231930_00142_ibzbt-630d322a-4eae-4bb2-a0b8-2d4b6a519d07.parquet │            2 │
+│       1 │ s3://iceberg-lab-058264098838/warehouse/orders/data/mes_compra=2017-11/20261102_231930_00142_ibzbt-b645593e-8588-4dd0-aa59-cbf166c14618.parquet │          301 │
+│       1 │ s3://iceberg-lab-058264098838/warehouse/orders/data/mes_compra=2017-12/20261102_231930_00142_ibzbt-eb599b41-d53e-46d4-a8d5-9e160e774aea.parquet │         2153 │
 └─────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────┘
 ```
 
@@ -2489,20 +2669,19 @@ EOF
 ```
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬───────┬────────────┐
-│                                                          file_path                                                           │  pos  │ mes_compra │
-│                                                           varchar                                                            │ int64 │  varchar   │
-├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼───────┼────────────┤
-│ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-12/00000-11-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet │    12 │ 2017-12    │
-│ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-12/00000-11-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet │    26 │ 2017-12    │
-│ s3://iceberg-lab-226754155971/warehouse/orders/data/mes_compra=2017-12/00000-11-baefce9e-9570-4ea5-bf49-e0dc040d3458.parquet │    28 │ 2017-12    │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴───────┴────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬───────┬────────────┐
+│                                                          file_path                                                          │  pos  │ mes_compra │
+│                                                           varchar                                                           │ int64 │  varchar   │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼───────┼────────────┤
+│ s3://iceberg-lab-058264098838/warehouse/orders/data/mes_compra=2017-10/00000-9-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet │  1913 │ 2017-10    │
+│ s3://iceberg-lab-058264098838/warehouse/orders/data/mes_compra=2017-10/00000-9-f3a3d2b6-8961-4da0-99c3-744dd242c1b3.parquet │  4061 │ 2017-10    │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴───────┴────────────┘
 
 ┌─────────────────┐
 │ linhas_marcadas │
 │      int64      │
 ├─────────────────┤
-│            2153 │
+│               2 │
 └─────────────────┘
 ```
 
@@ -2875,7 +3054,8 @@ Para apagar a tabela do desafio na AWS: `aws glue delete-table --database-name o
 
 **Especificação e documentação**
 
-- [Apache Iceberg — Table Spec](https://iceberg.apache.org/spec/) — a especificação do formato: metadados, manifests, delete files, partições (seções 3 a 9).
+- [Apache Iceberg — Table Spec](https://iceberg.apache.org/spec/) — a especificação do formato: metadados, manifests, delete files, partições (seções 3 a 9). O commit pela troca condicional do ponteiro está em [Metastore Tables](https://iceberg.apache.org/spec/#metastore-tables) e as regras de retry em [Commit Conflict Resolution and Retry](https://iceberg.apache.org/spec/#commit-conflict-resolution-and-retry) (seção 5).
+- [Iceberg REST Catalog API](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) — o contrato de um catálogo descrito como API HTTP: carregar, criar e registrar tabelas, e o commit com *requirements* (seção 12).
 - [Apache Iceberg — Documentação](https://iceberg.apache.org/docs/latest/) — conceitos e configuração das tabelas; [Maintenance](https://iceberg.apache.org/docs/latest/maintenance/) cobre expiração de snapshots, órfãos e compactação (seção 11).
 - [PyIceberg](https://py.iceberg.apache.org/) — a biblioteca usada para escrever as tabelas; a [API](https://py.iceberg.apache.org/api/) documenta `upsert`, `update_spec`, `manage_snapshots` e `inspect`.
 - [DuckDB — extensão Iceberg](https://duckdb.org/docs/stable/core_extensions/iceberg/overview) e [extensão Avro](https://duckdb.org/docs/stable/core_extensions/avro) — a leitura das tabelas e dos manifests (seções 4 a 12).
@@ -2883,7 +3063,7 @@ Para apagar a tabela do desafio na AWS: `aws glue delete-table --database-name o
 **AWS**
 
 - [Amazon Athena — Querying Apache Iceberg tables](https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html) — leitura, DML, `OPTIMIZE` e `VACUUM` (seção 14).
-- [AWS Glue Data Catalog](https://docs.aws.amazon.com/glue/latest/dg/catalog-and-crawler.html) — o catálogo da seção 13.
+- [AWS Glue Data Catalog](https://docs.aws.amazon.com/glue/latest/dg/catalog-and-crawler.html) — o catálogo da seção 13; a [integração do Iceberg com o Glue](https://iceberg.apache.org/docs/latest/aws/#glue-catalog) explica o mapeamento (namespace → database, tabela → tabela) e o *optimistic locking*.
 
 **Dados e contexto**
 
@@ -2923,7 +3103,7 @@ aws s3 rb "s3://${BUCKET}" --force
 **Recomeçar a parte local** (os dados baixados em `dados/` são mantidos):
 
 ```sh
-rm -rf warehouse lake
+rm -rf warehouse lake catalogo.db
 
 ```
 
