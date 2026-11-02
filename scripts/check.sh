@@ -22,7 +22,7 @@ done
 
 echo
 echo "Tabelas locais"
-if [ -f warehouse/catalogo.db ]; then
+if [ -f catalogo.db ]; then
   python3 - <<'PY'
 from lab import catalogo
 c = catalogo()
