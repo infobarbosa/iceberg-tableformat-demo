@@ -2070,11 +2070,11 @@ Olhe também para a tabela inteira: cerca de 800 arquivos para 8 MB de dados, um
 # 11.d.1
 python3 - <<'EOF'
 from lab import *
-from datetime import datetime
+from datetime import datetime, timezone
 
 t = tabela()
 print("snapshots antes:", len(t.snapshots()))
-t.maintenance.expire_snapshots().older_than(datetime.now()).commit()
+t.maintenance.expire_snapshots().older_than(datetime.now(timezone.utc)).commit()
 t = tabela()
 print("snapshots depois:", len(t.snapshots()))
 tamanho_em_disco(t)
@@ -2088,6 +2088,8 @@ snapshots depois: 1
 data/        792 arquivos     8496.3 KB
 metadata/    127 arquivos     1792.5 KB
 ```
+
+O `timezone.utc` não é enfeite. A especificação grava o horário de cada snapshot em milissegundos desde 1970 em UTC (`timestamp-ms`), e o PyIceberg trata um `datetime` sem fuso como se já estivesse em UTC. Numa máquina no horário de Brasília, um `datetime.now()` sem fuso ficaria três horas no passado, e nenhum snapshot seria mais velho que ele.
 
 O histórico encolheu para um snapshot. E o disco... não mudou. O `expire_snapshots` do PyIceberg remove os snapshots dos metadados, mas **não apaga arquivos**. O que sobrou no disco agora são **arquivos órfãos**: nenhum snapshot vivo aponta para eles.
 
