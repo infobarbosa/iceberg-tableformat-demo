@@ -6,14 +6,25 @@ Github: [infobarbosa](https://github.com/infobarbosa)
 
 [Apache Iceberg](https://iceberg.apache.org/) é um **open table format**: uma especificação de como organizar arquivos de dados (Parquet) e arquivos de metadados para que uma pasta num data lake se comporte como uma tabela de banco — com commits atômicos, versões, mudança de schema e de particionamento, e atualização de linhas. Ele não é um banco nem um motor: é um formato que vários motores sabem ler e escrever.
 
-Este laboratório abre o Iceberg arquivo por arquivo. Você vai gravar uma tabela com um motor (**PyIceberg**), lê-la com outro (**DuckDB**) e, no final, com um terceiro (**Amazon Athena**), olhando a cada passo o que mudou no disco. O caso é o de um e-commerce real: os pedidos do **Olist**, um marketplace brasileiro.
+Este laboratório abre o Iceberg arquivo por arquivo. Você vai gravar uma tabela com uma biblioteca (**PyIceberg**), lê-la com um motor que não tem nada a ver com ela (**DuckDB**) e, no final, com um terceiro, que também escreve (**Amazon Athena**), olhando a cada passo o que mudou no disco. O caso é o de um e-commerce real: os pedidos do **Olist**, um marketplace brasileiro.
 
 Os comandos são copy-paste no terminal do laboratório, na ordem em que aparecem.
+
+### O objeto de estudo é a especificação
+
+Este laboratório **não é um curso de PyIceberg**. O que você estuda é a [especificação do Iceberg](https://iceberg.apache.org/spec/) (a *Table Spec*): o que existe em cada arquivo, como os arquivos apontam uns para os outros e que regras um escritor precisa seguir para que qualquer leitor entenda a tabela.
+
+Uma especificação, porém, não se executa. Para ver o formato acontecer, alguém precisa escrever os arquivos, e esse papel é do PyIceberg: uma **implementação** da especificação, escrita em Python (com algumas rotinas em Rust, no pacote opcional `pyiceberg-core`) e mantida pelo próprio projeto Apache Iceberg. Ela não é um invólucro da biblioteca Java usada pelo Spark e pelo Flink, nem sobe uma JVM: lê e grava os metadados por conta própria. É uma implementação entre várias (Java, Python, Rust, Go, C++, além dos motores que têm a sua, como o Athena), escolhida aqui porque roda num terminal, sem cluster.
+
+Por isso o roteiro quase nunca acredita no PyIceberg sob palavra. Depois de cada operação, você abre os arquivos com ferramentas que não sabem nada de Iceberg (`jq`, `sqlite3`, `tree`) e lê a tabela com o DuckDB, uma segunda implementação, independente da primeira. Se a especificação é o que importa, duas implementações que não se conhecem têm de chegar ao mesmo resultado, e você vai conferir isso várias vezes.
+
+A pergunta a fazer diante de cada comportamento é: **isso é do formato ou é desta ferramenta?** Para ajudar, o texto marca os dois casos (veja [Convenções](#convenções)).
 
 ---
 
 ## O que você vai saber fazer ao final
 
+- Separar o que é da **especificação** do Iceberg (vale para qualquer ferramenta) do que é escolha ou limitação de uma **implementação** (PyIceberg, DuckDB, Athena).
 - Explicar o que um formato de tabela resolve que uma pasta de arquivos Parquet não resolve.
 - Descrever as três camadas do Iceberg — **catálogo, metadados e dados** — e seguir, num terminal, o caminho de uma consulta: catálogo → `metadata.json` → **manifest list** → **manifest** → **data file**.
 - Explicar por que um **commit** é atômico e o que a **concorrência otimista** faz quando dois escritores gravam ao mesmo tempo.
@@ -58,9 +69,9 @@ A tabela principal é a de pedidos. Cada pedido tem um ciclo de vida — comprad
 
 | Ferramenta | Papel |
 |---|---|
-| `python3` + **PyIceberg** | grava as tabelas: cria, carrega, altera |
-| **DuckDB** (`duckdb -c "..."`) | lê as tabelas e abre os arquivos de metadados e de dados |
-| `jq`, `sqlite3`, `tree` | inspecionam os arquivos à mão |
+| `python3` + **PyIceberg** | a implementação que **escreve**: cria as tabelas, faz os commits, altera schema e partição |
+| **DuckDB** (`duckdb -c "..."`) | uma segunda implementação, que **lê**: consulta as tabelas e abre os arquivos de metadados e de dados |
+| `jq`, `sqlite3`, `tree` | não sabem nada de Iceberg: mostram os arquivos como eles são |
 | `lab.py` | módulo de apoio: `from lab import *` traz o catálogo, as cargas do Olist e funções de inspeção |
 
 O `lab.py` existe para que cada bloco do roteiro tenha poucas linhas e mostre só o que importa. Ele está em `/opt/iceberg-lab/lab.py`, e vale abri-lo: as funções são curtas e comentadas.
@@ -72,6 +83,12 @@ Cada bloco de comando tem na primeira linha um rótulo, como `# 3.b.1` (subseç�
 Alguns valores **mudam a cada execução**: os IDs de snapshot, os UUIDs nos nomes de arquivo e os horários. Os seus não vão bater com os do texto — e isso é esperado. Contagens de linhas e de arquivos, essas sim, devem bater.
 
 Os blocos marcados **Provoque este erro** falham de propósito: a mensagem de erro é a lição.
+
+Dois tipos de nota separam o formato da ferramenta:
+
+> **📐 Especificação** — vale para qualquer implementação, porque a especificação exige. Traz o link da seção da *Table Spec* que trata do assunto.
+
+> **🔧 Implementação** — é escolha, atalho ou limitação de uma ferramenta (quase sempre o PyIceberg). Outra implementação pode fazer diferente sem deixar de ser Iceberg.
 
 ---
 
@@ -97,7 +114,7 @@ Os blocos marcados **Provoque este erro** falham de propósito: a mensagem de er
 
 10. [Upsert e delete: copy-on-write](#10-upsert-e-delete-copy-on-write)
 11. [Manutenção: o custo do histórico](#11-manutenção-o-custo-do-histórico)
-12. [Um formato, vários motores](#12-um-formato-vários-motores)
+12. [Uma especificação, várias implementações](#12-uma-especificação-várias-implementações)
 
 **Parte IV — Na AWS**
 
@@ -598,6 +615,8 @@ jq '{"format-version", location, "current-snapshot-id", snapshots,
 - `location` — a pasta-raiz da tabela. Note que é um **caminho absoluto**; isso vai importar na seção 13.
 - `current-snapshot-id: null` e `snapshots: []` — a tabela ainda não tem nenhuma versão com dados.
 
+> **📐 Especificação** — os campos do `metadata.json` e o nome do arquivo (`<versão>-<uuid>.metadata.json`) são definidos na especificação: [Table Metadata](https://iceberg.apache.org/spec/#table-metadata) e [Metastore Tables](https://iceberg.apache.org/spec/#metastore-tables). Qualquer implementação que grave esta tabela produz um arquivo com esse formato.
+
 ### 3.c. O catálogo guarda só um ponteiro
 
 ```sh
@@ -615,6 +634,10 @@ previous_metadata_location =
 ```
 
 Essa linha é tudo o que o catálogo sabe sobre a tabela: o nome e o caminho do `metadata.json` atual. Todo o resto — schema, versões, arquivos — está nos metadados. É por isso que trocar de catálogo (de SQLite para Glue, por exemplo) é uma operação pequena: os metadados vão junto com os dados.
+
+> **📐 Especificação** — o que a especificação exige de um catálogo é pouco: guardar o ponteiro para o `metadata.json` atual e trocá-lo de forma atômica, só se ele ainda for o que o escritor leu (*check-and-put*). Veja [Metastore Tables](https://iceberg.apache.org/spec/#metastore-tables).
+>
+> **🔧 Implementação** — *como* o ponteiro é guardado não é da especificação. A tabela `iceberg_tables` no SQLite, com essas colunas, é o desenho do catálogo SQL do PyIceberg. O Glue, na Parte IV, guarda o mesmo ponteiro de outro jeito.
 
 ### 3.d. O que você deve conseguir explicar
 
@@ -679,6 +702,8 @@ flowchart TB
 ```
 
 Você vai descer a árvore um nível por vez.
+
+> **📐 Especificação** — os quatro níveis, o formato de cada arquivo (JSON no topo, Avro nos manifests, Parquet nos dados) e os campos de cada um estão na especificação: [Snapshots](https://iceberg.apache.org/spec/#snapshots), [Manifest Lists](https://iceberg.apache.org/spec/#manifest-lists) e [Manifests](https://iceberg.apache.org/spec/#manifests). É por isso que, daqui a pouco, o DuckDB vai conseguir percorrer uma árvore que o PyIceberg gravou.
 
 ### 4.b. O metadata.json: o snapshot
 
@@ -848,12 +873,15 @@ FROM iceberg_scan('$M') GROUP BY ALL ORDER BY 2 DESC"
 
 O `iceberg_scan` recebe o caminho de **um** `metadata.json`, porque é esse arquivo que define a versão da tabela. A leitura dá os 800 pedidos de janeiro, muitos ainda não entregues no fim do mês.
 
+Repare no que acabou de acontecer: a extensão Iceberg do DuckDB é outra implementação da especificação, escrita em C++ por outra equipe, e nunca conversou com o PyIceberg. Ela leu a tabela porque os dois seguem o mesmo documento.
+
 ### 4.g. O que você deve conseguir explicar
 
 - Os quatro níveis da árvore — metadata.json, manifest list, manifest, data file — e o que cada um guarda.
 - O que é um snapshot.
 - Onde ficam as estatísticas por coluna e para que servem.
 - Por que um leitor de Iceberg nunca vê um arquivo que não esteja listado num manifest.
+- Por que o DuckDB consegue ler uma tabela gravada pelo PyIceberg sem que um saiba do outro.
 
 ---
 
@@ -953,6 +981,8 @@ O commit termina com um único `UPDATE` nessa linha, trocando o ponteiro do `met
 
 É o problema 2.e resolvido. Uma carga em andamento grava data files e manifests que nenhum `metadata.json` aponta ainda; um leitor que chega nesse meio-tempo lê o snapshot anterior, inteiro e coerente.
 
+> **📐 Especificação** — a troca atômica do ponteiro é a base do modelo de commits da especificação: [Optimistic Concurrency](https://iceberg.apache.org/spec/#optimistic-concurrency).
+
 ### 5.d. Dois escritores ao mesmo tempo
 
 E se dois processos fizerem commit ao mesmo tempo? Simule: duas "sessões" carregam a tabela, e as duas gravam abril.
@@ -1024,6 +1054,10 @@ CommitFailedException -> Requirement failed: current schema id has changed: expe
 ```
 
 A sessão B partiu do schema 0 e encontrou o schema 1. O commit é recusado, e cabe à aplicação recarregar a tabela e decidir o que fazer.
+
+> **📐 Especificação** — quais operações podem ser reaplicadas depois de um conflito é regra do formato, não da ferramenta. A especificação diz que um `append` sempre pode ser reaplicado e que uma mudança de schema precisa verificar se o schema mudou desde que o escritor leu a tabela: exatamente os dois casos acima. Veja [Commit Conflict Resolution and Retry](https://iceberg.apache.org/spec/#commit-conflict-resolution-and-retry).
+>
+> **🔧 Implementação** — *quantas vezes* tentar de novo e quanto esperar entre as tentativas (o "retrying (1/4) in 108 ms") é política do PyIceberg. A biblioteca Java, usada pelo Spark, tem a sua, configurável na propriedade `commit.retry.num-retries`.
 
 ### 5.e. O que você deve conseguir explicar
 
@@ -1126,6 +1160,8 @@ pedidos no fechamento: 5262
 ```
 
 Uma **tag** é um nome que aponta para um snapshot, como uma tag do Git. `main` também aparece na lista: é o **branch** principal, o ponteiro que avança a cada commit. Além de identificar a versão, a tag protege o snapshot: ele não é apagado pela manutenção enquanto a tag existir.
+
+> **📐 Especificação** — tags e branches ficam no mapa `refs` do `metadata.json`, e a regra de que um snapshot com tag sobrevive à expiração está na própria especificação: [Snapshot References](https://iceberg.apache.org/spec/#snapshot-references) e [Snapshot Retention Policy](https://iceberg.apache.org/spec/#snapshot-retention-policy).
 
 ### 6.c. Rollback da carga duplicada
 
@@ -1308,6 +1344,8 @@ warehouse/olist/products
 
 A mudança de schema foi um commit só de metadados: um `metadata.json` novo, que guarda **os dois schemas** (o 0 e o 1). Nenhum data file novo, nenhum reescrito.
 
+> **📐 Especificação** — identificar colunas por ID, nunca reaproveitar um ID e ler arquivos antigos casando as colunas pelo ID são regras da especificação: [Schema Evolution](https://iceberg.apache.org/spec/#schema-evolution) e [Column Projection](https://iceberg.apache.org/spec/#column-projection). Na 7.d, o DuckDB segue a mesma regra.
+
 ### 7.c. A segunda exportação, já com os nomes novos
 
 ```sh
@@ -1482,6 +1520,10 @@ warehouse/olist/orders/data
 
 O PyIceberg organiza os arquivos em pastas por partição, para facilitar a vida de quem navega no disco. Mas essas pastas **não são a partição**: a partição de cada data file está registrada no manifest. Um leitor de Iceberg nem olha para os nomes das pastas.
 
+> **📐 Especificação** — a partição como transformação de uma coluna, com as transformações possíveis (`year`, `month`, `day`, `hour`, `bucket`, `truncate`, `identity`), é definida em [Partitioning](https://iceberg.apache.org/spec/#partitioning) e [Partition Transforms](https://iceberg.apache.org/spec/#partition-transforms).
+>
+> **🔧 Implementação** — o layout em pastas (`data/mes_compra=2017-01/`) e os nomes dos arquivos são escolha do escritor. A especificação não os prescreve: um escritor poderia gravar todos os arquivos numa pasta só, com qualquer nome, e a tabela continuaria correta.
+
 ### 8.b. A partição nos metadados
 
 ```sh
@@ -1514,7 +1556,7 @@ EOF
   10 rows                                      3 columns
 ```
 
-O valor da partição é o resultado da transformação: o número de meses desde janeiro de 1970 (564 é janeiro de 2017). Cada manifest guarda, além disso, o intervalo de partições que contém — e a manifest list também, um nível acima. Um leitor pode descartar um manifest inteiro sem abri-lo.
+O valor da partição é o resultado da transformação: o número de meses desde janeiro de 1970 (564 é janeiro de 2017). Essa conta está escrita na especificação, e é por isso que duas implementações diferentes chegam ao mesmo valor de partição para a mesma data. Cada manifest guarda, além disso, o intervalo de partições que contém — e a manifest list também, um nível acima. Um leitor pode descartar um manifest inteiro sem abri-lo.
 
 ### 8.c. Pruning: quantos arquivos uma consulta abre
 
@@ -1539,6 +1581,8 @@ pedidos de março:           2682
 ```
 
 `plan_files` é a fase de **planejamento** da leitura: o PyIceberg percorre os metadados e devolve só os arquivos que podem conter linhas que satisfazem o filtro. A consulta filtrou pela data de compra — a partição ninguém mencionou.
+
+> **📐 Especificação** — como um leitor usa as partições e as estatísticas dos manifests para descartar arquivos está descrito em [Scan Planning](https://iceberg.apache.org/spec/#scan-planning). O nome `plan_files` é do PyIceberg; a ideia é de qualquer leitor.
 
 O DuckDB faz o mesmo e informa no plano de execução:
 
@@ -1632,6 +1676,8 @@ EOF
 ```
 
 A tabela agora tem três specs: o 0 (sem partição, de quando foi criada), o 1 (mensal) e o 2 (diário, o atual). Os specs antigos não são apagados: os arquivos gravados com eles continuam na tabela, e cada um precisa ser lido com o spec que tinha quando foi gravado. A partição diária recebeu um ID novo (1001); o 1000 não é reaproveitado.
+
+> **📐 Especificação** — cada mudança cria um spec novo, com ID próprio, e os IDs de campos de partição não mudam nem são reaproveitados: [Partition Evolution](https://iceberg.apache.org/spec/#partition-evolution).
 
 ```sh
 # 9.a.2
@@ -1754,6 +1800,10 @@ Os data files do Iceberg são Parquet: imutáveis. Atualizar ou apagar uma linha
 
 O PyIceberg escreve em copy-on-write. O merge-on-read aparece na seção 14, com o Athena.
 
+> **📐 Especificação** — "copy-on-write" e "merge-on-read" não aparecem na especificação. O que ela define são as peças: os tipos de operação de um snapshot (`append`, `overwrite`, `delete`, `replace`, em [Snapshots](https://iceberg.apache.org/spec/#snapshots)) e os delete files ([Row-level Deletes](https://iceberg.apache.org/spec/#row-level-deletes)). As duas estratégias são maneiras de um escritor combinar essas peças.
+>
+> **🔧 Implementação** — escrever só em copy-on-write é uma limitação do PyIceberg 0.12. Ele sabe **ler** delete files (você vai ver na 14.d), mas não os grava.
+
 ### 10.a. A tabela está desatualizada
 
 Pegue um pedido de janeiro e compare o que a tabela diz com o que aconteceu:
@@ -1822,7 +1872,11 @@ overwrite - 10 +300 arquivos | -31884 +20264 linhas
 append    -  0 +292 arquivos | -    0 +11620 linhas
 ```
 
-Nenhum pedido novo — todos já estavam lá —, e 11.620 atualizados. O upsert fez **dois commits**: um `overwrite`, que tirou da tabela os data files com linhas a atualizar e pôs no lugar versões regravadas sem essas linhas, e um `append`, com as linhas atualizadas.
+Nenhum pedido novo — todos já estavam lá —, e 11.620 atualizados. O upsert criou **dois snapshots**: um `overwrite`, que tirou da tabela os data files com linhas a atualizar e pôs no lugar versões regravadas sem essas linhas, e um `append`, com as linhas atualizadas. Os dois entraram num **único commit**: uma só troca de ponteiro no catálogo, um só `metadata.json` novo.
+
+> **📐 Especificação** — commit e snapshot não são a mesma coisa. O commit é a troca atômica do ponteiro; um commit pode registrar mais de um snapshot, e os leitores só veem o resultado final. Os nomes das operações registradas em cada snapshot são da especificação: `overwrite` (arquivos saíram e entraram, mudando os dados) e `append` (só entraram arquivos).
+>
+> **🔧 Implementação** — "upsert" não é uma operação da especificação: é um método do PyIceberg, montado com as operações que ela define. Quebrar a mudança em dois snapshots é escolha dele. Um `MERGE` no Athena (seção 14) registra a mesma mudança num snapshot só.
 
 Repare na proporção: para atualizar menos de um terço dos pedidos, **os dez arquivos mensais** saíram inteiros — basta uma linha alterada para o arquivo inteiro ser regravado. (Os de novembro ficaram: a carga de novembro já tinha o estado do fim do mês, e nada mudou neles.) É o custo do copy-on-write, e é o problema 2.d de novo, só que agora atômico: os leitores veem a tabela antes ou depois do upsert, nunca no meio.
 
@@ -1915,7 +1969,7 @@ Mas o time travel da seção 6 continua funcionando — e por isso **os pedidos 
 
 - Como o Iceberg atualiza linhas sem alterar nenhum arquivo.
 - O que é copy-on-write, o que ele custa na escrita e por que não custa nada a mais na leitura.
-- Por que um upsert gera dois commits no PyIceberg.
+- A diferença entre commit e snapshot, e por que o upsert do PyIceberg cria dois snapshots num commit só, enquanto um `MERGE` cria um.
 - Por que, depois de um delete, o dado apagado ainda pode ser lido.
 
 ---
@@ -2004,6 +2058,8 @@ metadata/    126 arquivos     1784.1 KB
 
 A versão atual lê um arquivo para o dia, em vez de duas dezenas. O disco, porém, ganhou um arquivo: os pequenos continuam lá, porque os snapshots anteriores ainda os usam.
 
+> **🔧 Implementação** — a falta de um comando de compactação é uma lacuna do PyIceberg 0.12, não do formato. A especificação tem até uma operação reservada para isso, `replace` (arquivos trocados sem mudar os dados), que o `OPTIMIZE` do Athena vai usar na 14.f. O atalho com `overwrite` funciona, mas o histórico registra a compactação como mudança de dados: um snapshot `delete` seguido de um `append`.
+
 Olhe também para a tabela inteira: cerca de 800 arquivos para 8 MB de dados, uma média de 10 KB por arquivo. A partição diária, com cerca de 120 pedidos por dia, é fina demais para este volume — o tamanho de arquivo que os motores esperam fica na casa das centenas de MB (o padrão de escrita do Iceberg é 512 MB). Compactar ajuda, mas não vence uma partição mal dimensionada: **escolher a partição é escolher o tamanho dos arquivos**. Num e-commerce de verdade, com centenas de milhares de pedidos por dia, a partição diária faria sentido.
 
 ### 11.d. Expirando snapshots
@@ -2034,6 +2090,10 @@ metadata/    127 arquivos     1792.5 KB
 ```
 
 O histórico encolheu para um snapshot. E o disco... não mudou. O `expire_snapshots` do PyIceberg remove os snapshots dos metadados, mas **não apaga arquivos**. O que sobrou no disco agora são **arquivos órfãos**: nenhum snapshot vivo aponta para eles.
+
+> **📐 Especificação** — a especificação define o que é expirar (tirar snapshots dos metadados, respeitando tags e a política de retenção) e **quando** um arquivo pode ser apagado: quando nenhum snapshot que restou ainda o usa. Veja [Snapshot Retention Policy](https://iceberg.apache.org/spec/#snapshot-retention-policy) e [Deleting Files](https://iceberg.apache.org/spec/#deleting-files).
+>
+> **🔧 Implementação** — *se* a ferramenta apaga esses arquivos na mesma operação é escolha dela. O `expire_snapshots` do PyIceberg 0.12 não apaga; o da biblioteca Java (usado pelo Spark) apaga por padrão, e o `VACUUM` do Athena também (14.f). Não leve deste laboratório a ideia de que "expirar nunca apaga arquivos": isso é deste escritor.
 
 E o cliente da seção 10?
 
@@ -2131,17 +2191,17 @@ Já no commit que gravou a propriedade, o escritor apagou os `metadata.json` al�
 
 - Por que uma tabela Iceberg cresce no disco mesmo quando o número de linhas não cresce.
 - O que são small files, por que custam caro, o que a compactação faz e por que a granularidade da partição determina o tamanho dos arquivos.
-- A diferença entre expirar um snapshot e apagar os arquivos dele.
+- A diferença entre expirar um snapshot e apagar os arquivos dele: o que a especificação define e o que cada ferramenta escolhe fazer.
 - Por que um delete, sozinho, não atende a um pedido de eliminação da LGPD — e o que mais é preciso fazer.
 - Por que a remoção de órfãos precisa de um prazo de segurança.
 
 ---
 
-## 12. Um formato, vários motores
+## 12. Uma especificação, várias implementações
 
-Ao longo das seções 3 a 11, a mesma tabela foi gravada pelo PyIceberg e lida pelo DuckDB. Nenhum dos dois sabe da existência do outro: o que eles compartilham é o **formato**.
+Ao longo das seções 3 a 11, a mesma tabela foi gravada pelo PyIceberg e lida pelo DuckDB. Nenhum dos dois sabe da existência do outro: o que eles compartilham é a **especificação**.
 
-### 12.a. Dois motores, a mesma resposta
+### 12.a. Duas implementações, a mesma resposta
 
 ```sh
 # 12.a.1
@@ -2164,7 +2224,7 @@ PyIceberg: 45302 pedidos, 40929 entregues
 DuckDB:    45302 pedidos, 40929 entregues
 ```
 
-O PyIceberg chegou à tabela pelo catálogo; o DuckDB, direto pelo `metadata.json`. Os dois percorreram a mesma árvore e leram os mesmos arquivos.
+O PyIceberg chegou à tabela pelo catálogo; o DuckDB, direto pelo `metadata.json`. Os dois percorreram a mesma árvore e leram os mesmos arquivos. A tabela passou por partition evolution, upserts, um delete e manutenção, e mesmo assim as duas implementações concordam: cada uma seguiu o mesmo documento, e não uma à outra.
 
 ### 12.b. O papel do catálogo
 
@@ -2212,9 +2272,22 @@ flowchart LR
 | 2.e — leitura no meio da escrita | commit atômico pela troca do ponteiro | 5 |
 | 2.f — o estado de ontem | snapshots e time travel | 6 |
 
+E o balanço do que você viu até aqui, separado entre formato e ferramenta:
+
+| Da especificação (vale para qualquer implementação) | Do PyIceberg 0.12 (outra ferramenta pode fazer diferente) |
+|---|---|
+| as três camadas e a árvore `metadata.json` → manifest list → manifest → data file | o catálogo SQL e o desenho da tabela `iceberg_tables` |
+| o commit como troca atômica do ponteiro; quais operações podem ser reaplicadas num conflito | quantas vezes tentar de novo, e com que intervalo |
+| snapshots, tags, branches e a regra de que tags protegem snapshots | — |
+| field IDs e a leitura de arquivos antigos pelo ID | — |
+| partições como transformações (`month`, `day`), specs com ID, partition evolution | as pastas `mes_compra=…` e os nomes dos arquivos |
+| as operações `append`, `overwrite`, `delete`, `replace` e os delete files | o upsert em dois snapshots; escrever só em copy-on-write; não ter compactação |
+| quando um arquivo pode ser apagado depois de expirar um snapshot | expirar sem apagar os arquivos |
+
 ### 12.d. O que você deve conseguir explicar
 
-- Por que dois motores que não se conhecem conseguem ler e escrever a mesma tabela.
+- Por que duas implementações que não se conhecem conseguem ler e escrever a mesma tabela.
+- Dar um exemplo de comportamento que é da especificação e outro que é só do PyIceberg, e dizer como você distinguiria os dois.
 - Para que serve o catálogo, se um leitor consegue ler a tabela só com o `metadata.json`.
 - Como cada problema da seção 2 foi resolvido.
 
@@ -2257,6 +2330,8 @@ file:///home/barbosa/project/warehouse/olist/orders/metadata/858cb1b2-6985-45bc-
 ```
 
 Todos os ponteiros da árvore — do `metadata.json` à manifest list, da manifest list aos manifests, dos manifests aos data files — são **caminhos absolutos**. Uma cópia da pasta no S3 teria metadados apontando para `file:///home/barbosa/...`, um disco que não existe para quem lê do S3.
+
+> **📐 Especificação** — aqui não é escolha do PyIceberg: até a versão 3 do formato, a especificação **exige** caminhos completos em todos os campos de localização. Caminhos relativos à pasta da tabela, que permitiriam mover a tabela com um `cp`, são uma das mudanças da versão 4, ainda em desenvolvimento. Veja [File Locations in Metadata](https://iceberg.apache.org/spec/#file-locations-in-metadata).
 
 Mover uma tabela Iceberg de lugar exige reescrever os caminhos em todos os arquivos de metadados (o Spark tem um procedimento para isso, `rewrite_table_path`). Aqui, o caminho mais simples é o que uma migração de verdade costuma fazer: criar a tabela no destino e carregar o estado atual dos dados.
 
@@ -2473,6 +2548,8 @@ EOF
 
 `content = 1` é um **position delete file**: um Parquet com pares (arquivo, posição). Abra um:
 
+> **📐 Especificação** — o formato do delete file (as colunas `file_path` e `pos`) e a regra de como um leitor deve aplicá-lo são da especificação: [Position Delete Files](https://iceberg.apache.org/spec/#position-delete-files). É isso que vai permitir, na 14.d, que o PyIceberg e o DuckDB leiam o que o Athena gravou. Position delete files só podem ser criados na versão 2 do formato, a desta tabela; na versão 3, a especificação os substitui por [deletion vectors](https://iceberg.apache.org/spec/#deletion-vectors), um bitmap por data file.
+
 ```sh
 # 14.c.2
 python3 - <<'EOF'
@@ -2506,9 +2583,9 @@ EOF
 └─────────────────┘
 ```
 
-Cada linha diz: "no arquivo tal, a linha da posição tal não vale mais". É o **merge-on-read**: a escrita foi barata — nenhum data file de 2017 foi reescrito —, e a leitura agora precisa juntar os data files com os delete files para saber o que vale.
+Cada linha diz: "no arquivo tal, a linha da posição tal não vale mais". (A terceira coluna, `mes_compra`, não faz parte das colunas que a especificação define para um position delete file: é um acréscimo do Athena, que os outros leitores simplesmente ignoram.) É o **merge-on-read**: a escrita foi barata — nenhum data file de 2017 foi reescrito —, e a leitura agora precisa juntar os data files com os delete files para saber o que vale.
 
-### 14.d. Três motores, uma resposta
+### 14.d. Três implementações, uma resposta
 
 ```sh
 # 14.d.1
@@ -2536,6 +2613,8 @@ DuckDB:    52371 pedidos, 47529 entregues
 ```
 
 O Athena gravou os delete files; o PyIceberg e o DuckDB os aplicaram na leitura sem nenhuma combinação prévia. O formato define o que um delete file significa, e todo leitor que segue a especificação chega ao mesmo resultado.
+
+Repare que o PyIceberg, que não sabe **gravar** delete files (seção 10), sabe **lê-los**. Uma implementação não precisa cobrir a especificação inteira para ser útil; precisa respeitar a parte que cobre.
 
 ### 14.e. O cliente da LGPD, no Athena
 
@@ -2576,6 +2655,10 @@ athena "SELECT operation, summary['deleted-data-files'] AS saiu_data, summary['r
 operation  saiu_data  saiu_delete  entrou_data  delete_files_restantes
 replace    8          5            5            0
 ```
+
+A operação registrada é `replace`: na especificação, arquivos trocados sem mudar os dados da tabela. Compare com a compactação improvisada da 11.c, que o PyIceberg registrou como mudança de dados.
+
+> **🔧 Implementação** — `OPTIMIZE` e `VACUUM` são comandos do Athena, não da especificação. A especificação diz o que uma compactação pode registrar e quando um arquivo pode ser apagado; cada ferramenta oferece os seus comandos para fazer isso (no Spark, procedimentos como `rewrite_data_files` e `expire_snapshots`).
 
 O `VACUUM` expira os snapshots antigos **e apaga os arquivos que ficaram órfãos** — o que, no PyIceberg, a seção 11 fez em dois passos. Ele respeita uma idade mínima, configurável na tabela; para a demonstração, um minuto:
 
@@ -2630,7 +2713,9 @@ Zero. Agora o dado saiu da tabela, do histórico e do armazenamento.
 
 ### 14.g. Copy-on-write ou merge-on-read?
 
-| | Copy-on-write (PyIceberg, seção 10) | Merge-on-read (Athena, seção 14) |
+Antes da comparação, um aviso: a escolha não é do formato — os dois modos são Iceberg —, e sim de cada escritor e de cada tabela. Neste laboratório, cada um apareceu pelas mãos de uma ferramenta diferente, mas o Spark, por exemplo, escreve dos dois jeitos.
+
+| | Copy-on-write (visto com o PyIceberg, seção 10) | Merge-on-read (visto com o Athena, seção 14) |
 |---|---|---|
 | Atualizar uma linha | reescreve o data file inteiro | grava um delete file pequeno |
 | Custo da escrita | alto, proporcional aos arquivos tocados | baixo, proporcional às linhas alteradas |
@@ -2638,12 +2723,13 @@ Zero. Agora o dado saiu da tabela, do histórico e do armazenamento.
 | Manutenção | expirar snapshots e remover órfãos | também compactar, para incorporar os deletes |
 | Bom para | tabelas lidas muito e alteradas pouco | tabelas com atualizações frequentes (CDC, upserts contínuos) |
 
-A escolha não é do formato — os dois modos são Iceberg —, e sim de cada escritor e de cada tabela. No Spark, por exemplo, ela é uma propriedade da tabela (`write.update.mode`, `write.delete.mode`, `write.merge.mode`).
+No Spark, a escolha é uma propriedade da tabela (`write.update.mode`, `write.delete.mode`, `write.merge.mode`).
 
 ### 14.h. O que você deve conseguir explicar
 
 - O que é um position delete file e o que ele contém.
-- Por que três motores diferentes chegam ao mesmo resultado lendo uma tabela com delete files.
+- Por que três implementações diferentes chegam ao mesmo resultado lendo uma tabela com delete files.
+- Por que copy-on-write e merge-on-read são estratégias de escritor, e não partes da especificação.
 - A diferença de custo entre copy-on-write e merge-on-read, na escrita e na leitura.
 - O que o `OPTIMIZE` e o `VACUUM` do Athena fazem, e o que cada um tem a ver com a LGPD.
 
@@ -2875,7 +2961,7 @@ Para apagar a tabela do desafio na AWS: `aws glue delete-table --database-name o
 
 **Especificação e documentação**
 
-- [Apache Iceberg — Table Spec](https://iceberg.apache.org/spec/) — a especificação do formato: metadados, manifests, delete files, partições (seções 3 a 9).
+- [Apache Iceberg — Table Spec](https://iceberg.apache.org/spec/) — a especificação do formato, objeto de estudo deste laboratório: metadados, manifests, commits, delete files, partições. Cada nota 📐 do roteiro aponta para uma seção dela.
 - [Apache Iceberg — Documentação](https://iceberg.apache.org/docs/latest/) — conceitos e configuração das tabelas; [Maintenance](https://iceberg.apache.org/docs/latest/maintenance/) cobre expiração de snapshots, órfãos e compactação (seção 11).
 - [PyIceberg](https://py.iceberg.apache.org/) — a biblioteca usada para escrever as tabelas; a [API](https://py.iceberg.apache.org/api/) documenta `upsert`, `update_spec`, `manage_snapshots` e `inspect`.
 - [DuckDB — extensão Iceberg](https://duckdb.org/docs/stable/core_extensions/iceberg/overview) e [extensão Avro](https://duckdb.org/docs/stable/core_extensions/avro) — a leitura das tabelas e dos manifests (seções 4 a 12).
