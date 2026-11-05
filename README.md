@@ -70,7 +70,7 @@ A tabela principal é a de pedidos. Cada pedido tem um ciclo de vida — comprad
 | Ferramenta | Papel |
 |---|---|
 | `python3` + **PyIceberg** | a implementação que **escreve**: cria as tabelas, faz os commits, altera schema e partição |
-| **DuckDB** (`duckdb -c "..."`) | uma segunda implementação, que **lê**: consulta as tabelas e abre os arquivos de metadados e de dados |
+| **DuckDB** (`duckdb -c "..."`) | tem dois papéis. Com `iceberg_scan`, é uma segunda implementação da especificação, que **lê** as tabelas como Iceberg. Com `read_parquet` e `read_avro`, é só um leitor de arquivos, que abre o que você apontar sem saber que existe Iceberg |
 | `jq`, `sqlite3`, `tree` | não sabem nada de Iceberg: mostram os arquivos como eles são |
 | `lab.py` | módulo de apoio: `from lab import *` traz o catálogo, as cargas do Olist e funções de inspeção |
 
@@ -1431,6 +1431,8 @@ FROM iceberg_scan('$M')"
 ```
 
 Na seção 2.c, só 16 mil produtos tinham tamanho de nome; agora são 32.341 — os 610 que faltam já vêm sem esse dado no dataset original. É o problema 2.c resolvido. A categoria em inglês, porém, só existe para a segunda exportação: a coluna nova vale `NULL` nos arquivos antigos, que não a têm. Schema evolution não reescreve dados; preencher o passado exigiria regravar os arquivos antigos — que é o assunto da Parte III.
+
+> **📐 Especificação** — compare com a 2.c.2. Lá, o mesmo DuckDB usou `read_parquet(..., union_by_name = true)`: como simples leitor de arquivos, juntou as colunas pelo **nome** e errou em silêncio. Aqui, com `iceberg_scan`, ele é um leitor de Iceberg: parte do `metadata.json`, escolhe os arquivos pelos manifests e casa as colunas pelo **field ID**. Nos dois casos há arquivos com nomes de coluna diferentes; a resposta certa veio quando o leitor seguiu a especificação, e não do DuckDB em si.
 
 ### 7.e. Duas tabelas no catálogo
 
